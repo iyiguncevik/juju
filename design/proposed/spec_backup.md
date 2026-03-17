@@ -1,14 +1,24 @@
-# Controller-as-a-Snap: Implementation Roadmap
+## Abstract
+Juju IAAS controllers are currently distributed and upgraded through a custom
+binary delivery path that is hard to operate and hard to evolve. This
+specification sets a higher-level direction: move IAAS controllers to a
+snap-based lifecycle, with clear separation between controller and machine/unit
+agent binaries.
 
-## Background
+## Rationale
+The current controller delivery model relies on bespoke tooling and static
+build constraints that increase operational overhead and slow delivery. It also
+limits standard upgrade controls expected in Ubuntu environments.
 
-Juju's IAAS controller currently runs as a statically-linked binary
-(`jujud-controller`) compiled with musl/CGO and distributed as a `tools.tar.gz`
-archive. This document describes a roadmap to replace that with a proper Ubuntu
-snap installed and upgraded on the controller machine, and to properly separate
-the controller binary from the machine/unit agent binary.
+At a company level, this work is needed to:
+- improve controller upgrade safety and predictability;
+- align Juju controller lifecycle management with platform-standard snap operations;
+- reduce build/distribution complexity by clarifying controller vs machine-agent concerns;
+- simplify the controller build process, improving developer experience and reducing friction in CI jobs;
+- provide a cleaner foundation for HA and airgapped controller operations;
+- align controller lifecycle management with established Canonical software installation practices, where snaps are the standard mechanism.
 
-## Problem statement
+### Problem statement
 
 The current IAAS controller binary distribution has several interrelated problems:
 
@@ -35,26 +45,19 @@ controller today, it restarts the same binary with a different command. With sna
 and binary separation, it must install a different binary entirely, requiring
 coordination with the snap install flow.
 
-## Success criteria
 
-The project is complete when:
-
-- New IAAS controller installs use the `jujud-controller` snap by default; no
+## Specification
+### Goals
+- Make snap the standard delivery and upgrade mechanism for new IAAS controllers; no
   `tools.tar.gz` is placed on the controller machine.
-- Controllers can be upgraded by upgrading the snap revision; `snap refresh --hold`
-  prevents automatic upgrades; the upgrader worker manages revision selection.
-- HA clusters work: machine agents detect the controller role, install the snap, and
-  transition cleanly to `jujud-controller`.
+- Ensure controller lifecycle operations are explicit, auditable, and operationally familiar.
 - `jujud` (machine/unit agent) and `jujud-controller` (controller snap) are truly
   separate binaries; `jujud` no longer links dqlite or domain services.
+- Preserve functional parity across supported deployment patterns, including HA and airgapped environments.
 - The `jujud-controller` binary in the snap and in the CAAS OCI image are identical,
   verified by SHA256 hash in CI.
-- Airgap deployments work via a snap store proxy or via pre-seeded snap+assert blobs
-  in the dqlite object store.
 - The musl-gcc toolchain and `_deps/` static C library downloads are removed from
   the build system.
-- Simplestreams is no longer used for controller binary distribution (machine/unit
-  agent simplestreams distribution is out of scope for this project).
 
 ## Decisions
 
@@ -250,9 +253,10 @@ an open question.
 - Simplestreams bypassed for controller binary discovery when flag is ON
 - Connected upgrades pull new snap from snap store automatically
 - `jujud-controller` is built as it's now
+- During upgrade download jujud from simplestreams and controller from snap store, store both of them in the object store
 
 **Problems to resolve:**
-- Snap channel strategy (`latest/stable` vs `4.x/stable`)
+- Snap channel strategy (versioned tracks only, e.g. `4.x/stable`; never `latest/*`)
 - How `upgrade-controller` discovers available snap revisions
 - Fully offline airgap: no snap proxy, no internet access
 
@@ -266,10 +270,13 @@ an open question.
 - `juju add-unit controller` unblocked and functional with snap path
 
 **Problems to resolve:**
-- How machine agent detects it should become a controller
+- How to remove controller-specific logic from agents and move to controller charm (e.g. juju-controller charm on `install` hook will get the equivalent of StateServingInfo from the socket and write that atomically to agent.conf or alternatively get juju-controller to ask jujud-controller to write the file on it's behalf.)
+- How machine agent detects it should become a controller (e.g. once snap and charm have been written to disk, the jujud-controller charm will trigger an endpoint on the socket to reload the process of the agent)
+- Figure out who's responsibility it is to install the snap locally, there are two ways (latter feels inline with charm standards):
+  - get the controller to install the snap on the charms behalf
+  - use charmlibs snap package to install the downloaded snaps from the controller objectstore via the s3 endpoint.
 - Atomic and recoverable snap install during HA transition
 - How to abort a transition to HA or mark a machine as a "broken" controller or otherwise ignore the machine as a controller candidate if the snap install cannot be recovered
-- Simplestreams updates for two separate binaries (brief)
 - Binary separation without breaking existing deployments
 
 ### Stage 4 — Binary Distribution Strategy + CAAS
@@ -277,7 +284,8 @@ an open question.
 
 **Deliverables:**
 - `caas/Dockerfile` updated to reference `jujud-controller` binary (following Stage 3 rename)
-- Both snap and OCI download the same binary from S3 during build
+- Both snap and OCI download the same binary from S3 during build, or OCI image extracts binary from snap directly
+- Verification of upgrades still using simplestreams
 - CI enforces hash identity: snap binary SHA256 == OCI binary SHA256
 
 **Problems to resolve:**
@@ -336,3 +344,5 @@ short-term but diverges from the direction of the wider platform team.
 **How to eliminate simplestreams for machine/unit agent binaries?** This is out of
 scope for this project but needs a dedicated decision. Options include bundling
 agent binaries in the controller snap, a separate snap, or charm payload.
+
+## Further Information
