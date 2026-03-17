@@ -106,94 +106,22 @@ binary and refactor the agent binaries to exclude dqlite and api server dependen
 ## Implementation stages
 
 ### Stage 1 — Snap Infrastructure & Dev Workflow
-**Outcome:** Developers can bootstrap and upgrade a single controller using a locally built snap file.
-
-**Deliverables:**
-- `github.com/juju/jujud-controller-snap` repo created with CI
-- `ControllerSnap` feature flag added, default OFF
-- `juju bootstrap --controller-snap=<path>` works end-to-end
-- `juju upgrade-controller --controller-snap=<path>` works end-to-end
-- Snap and assert stored in dqlite object store
-- `jujud-controller` is built as it's now
-
-**Problems to resolve:**
-- Where snap metadata (revision, assert path) lives in the schema
-- How to reject HA operations cleanly when flag is ON
-- `snap install --dangerous` acceptable for dev; not for production
+This stage establishes the snap path for IaaS controllers in development workflows. Teams can bootstrap and upgrade a single controller using a provided snap package, and required snap artifacts are stored for reuse. HA rollouts and production store-based behavior are out of scope in this stage.
 
 ### Stage 2 — IAAS Production: Snap Store (Single Controller)
-**Outcome:** Controllers bootstrap and upgrade from the snap store without local snap files.
-
-**Deliverables:**
-- Full `snap download` → `snap ack` → `snap install ./` flow in cloud-init
-- Airgap bootstrap works via snap store proxy
-- Simplestreams bypassed for controller binary discovery when flag is ON
-- Connected upgrades pull new snap from snap store automatically
-- `jujud-controller` is built as it's now
-- During upgrade download jujud from simplestreams and controller from snap store, store both of them in the object store
-
-**Problems to resolve:**
-- Snap channel strategy (versioned tracks only, e.g. `4.x/stable`; never `latest/*`)
-- How `upgrade-controller` discovers available snap revisions
-- Fully offline airgap: no snap proxy, no internet access
+This stage makes the snap path production-ready for single-controller IaaS deployments. Bootstrap and upgrade use the snap store, including proxied airgap environments, and controller binary delivery no longer depends on simplestreams. HA support and fully offline upgrades without a proxy are out of scope in this stage.
 
 ### Stage 3 — Binary Separation + HA
-**Outcome:** `jujud` and `jujud-controller` are truly separate binaries; HA works with the snap path.
-
-**Deliverables:**
-- `jujud` no longer links dqlite, raft, or domain services
-- Machine agent detects controller role and installs snap automatically
-- HA: all controller units run `jujud-controller` snap
-- `juju add-unit controller` unblocked and functional with snap path
-
-**Problems to resolve:**
-- How to remove controller-specific logic from agents and move to controller charm (e.g. juju-controller charm on `install` hook will get the equivalent of StateServingInfo from the socket and write that atomically to agent.conf or alternatively get juju-controller to ask jujud-controller to write the file on it's behalf.)
-- How machine agent detects it should become a controller (e.g. once snap and charm have been written to disk, the jujud-controller charm will trigger an endpoint on the socket to reload the process of the agent)
-- Figure out who's responsibility it is to install the snap locally, there are two ways (latter feels inline with charm standards):
-  - get the controller to install the snap on the charms behalf
-  - use charmlibs snap package to install the downloaded snaps from the controller objectstore via the s3 endpoint.
-- Atomic and recoverable snap install during HA transition
-- How to abort a transition to HA or mark a machine as a "broken" controller or otherwise ignore the machine as a controller candidate if the snap install cannot be recovered
-- Binary separation without breaking existing deployments
+This stage enables HA on the snap path and finalizes separation between machine and controller binaries. Machine agents can transition safely into the controller role, and multi-controller clusters run the controller snap consistently. CAAS alignment and legacy-path removal are out of scope in this stage.
 
 ### Stage 4 — Binary Distribution Strategy + CAAS
-**Outcome:** CAAS OCI image is updated to use the renamed `jujud-controller` binary; snap and OCI use the **same binary**.
-
-**Deliverables:**
-- `caas/Dockerfile` updated to reference `jujud-controller` binary (following Stage 3 rename)
-- Both snap and OCI download the same binary from S3 during build, or OCI image extracts binary from snap directly
-- Verification of upgrades still using simplestreams
-- CI enforces hash identity: snap binary SHA256 == OCI binary SHA256
-
-**Problems to resolve:**
-- Ensuring hash identity is verified before publishing
-- S3 access credentials for snap repo and OCI builds
+This stage aligns CAAS packaging with the same controller binary used by the snap path. Release validation confirms that snap and CAAS artifacts contain identical controller binaries. Changes to CAAS runtime architecture are out of scope in this stage. At this point, we should be able to safely use controller snaps in all use cases although functionality is still behind feature flag.
 
 ### Stage 5 — Flag Default ON & Full Integration Tests
-**Outcome:** All new IAAS installs use the snap path by default.
-
-**Deliverables:**
-- `ControllerSnap` flag flipped to `true` by default
-- Full integration test suite: bootstrap, upgrade, HA, airgap, binary separation
-- Upgrade documentation for operators
-
-**Problems to resolve:**
-- Migration path for existing legacy-binary controllers
-- All integration tests passing across all supported clouds
+This stage makes the snap path the default for new IaaS controllers and validates it through full end-to-end testing. Operator guidance for bootstrap, upgrade, HA, and airgap workflows is finalized. Although controller snap is used by default, feature flag still allows falling back to legacy distribution.
 
 ### Stage 6 — Legacy Removal
-**Outcome:** All legacy binary-distribution code removed; snap is the only controller path.
-
-**Deliverables:**
-- `ControllerSnap` feature flag deleted entirely
-- `tools.tar.gz` controller distribution code removed
-- musl-gcc toolchain and `_deps/` S3 static library downloads removed
-- `caas/Dockerfile` deleted or replaced (see Open Questions)
-- Simplestreams removed for **controller** binary distribution; machine/unit agents unaffected
-- Remove legacy build from jenkins release
-
-**Problems to resolve:**
-- Ensuring no controller code paths depend on removed infrastructure
+This stage removes the legacy controller distribution path so snap becomes the only controller delivery and upgrade mechanism. Transitional flags and old build/distribution steps are retired. Replacing machine/unit agent distribution through simplestreams remains out of scope for this project.
 
 
 
