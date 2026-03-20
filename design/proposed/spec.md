@@ -1,141 +1,76 @@
 ## Abstract
 
-Juju IAAS controllers are currently distributed and upgraded through a custom
-binary delivery path that is hard to operate and hard to evolve. This
-specification sets a higher-level direction: move IAAS controllers to a
-snap-based lifecycle, with clear separation between controller and machine/unit
-agent binaries.
+Juju is built and distributed using custom tooling and pipelines that have grown increasingly complex over time, for example through static linking of dependencies, while also falling out of alignment with Canonical best practices. The long-term direction is to move away from simplestreams and static linking toward snaps, rocks, and charms. This is not a trivial change, so a step-by-step approach is required. This specification defines the first step: separating the controller agent from the machine and unit agents, and delivering the controller via snap. Subsequent specifications will define the steps that follow.
 
 ## Rationale
 
-The current controller delivery model relies on bespoke tooling and static build
-constraints that increase operational overhead and slow delivery. It also limits
-standard upgrade controls expected in Ubuntu environments.
+The current controller delivery model relies on bespoke tooling and static build constraints that increase operational overhead and slow delivery. It also limits standard upgrade controls expected in Ubuntu environments.
 
-At a company level, this work is needed to:
+At the company level, this work is needed to:
 
-- align Juju controller lifecycle management with platform-standard snap
-  operations;
-- simplify the controller build process, improving developer experience and
-  reducing friction in CI jobs;
-- reduce build/distribution complexity by clarifying controller vs machine-agent
-  concerns;
+- align Juju controller lifecycle management with platform-standard snap operations;
+- simplify the controller build process, improving developer experience and reducing friction in CI jobs;
+- reduce build/distribution complexity by clarifying controller vs machine-agent concerns;
 
 ### Problem statement
 
-The current IAAS controller binary distribution has several interrelated
-problems:
+The current IAAS controller binary distribution has several interrelated problems:
 
-**Musl toolchain and static build complexity.** The build requires musl-gcc and
-pre-built static C libraries (`dqlite`,
-`raft`, `libuv`) downloaded into `_deps/` from S3 at build time. This slows CI,
-complicates developer setup, and ties the binary to a static-only distribution
-model.
+**Musl toolchain and static build complexity.** The build requires musl-gcc and pre-built static C libraries (`dqlite`, `raft`, `libuv`) downloaded into `_deps/` from S3 at build time. This slows CI, complicates developer setup, and ties the binary to a static-only distribution model.
 
-**No binary separation.** Both `jujud` (machine/unit agent) and
-`jujud-controller` (controller) link against the same packages, including dqlite
-and domain services. Machine agents carry significant controller-only
-dependencies unnecessarily.
+**No binary separation.** Both `jujud` (machine/unit agent) and `jujud-controller` (controller) link against the same packages, including dqlite and domain services. Machine agents carry significant controller-only dependencies unnecessarily.
 
-**Non-standard binary distribution.** Controllers receive binary updates through
-a bespoke tools-tarball mechanism backed by simplestreams, a metadata discovery
-system designed for cloud images. There is no standard rollback, hold, or
-upgrade-gate mechanism.
+**Non-standard binary distribution.** Controllers receive binary updates through a bespoke tools-tarball mechanism backed by simplestreams, a metadata discovery system designed for cloud images. There is no standard rollback, hold, or upgrade-gate mechanism.
 
-**HA transition is coupled to binary identity.** When a machine agent promotes
-to a controller today, it restarts the same binary with a different command.
-This requires special custom handling of the controller agent in the machine
-agent, i.e. leaking the logic that should reside in the controller charm into
-the machine agent.
+**HA transition is coupled to binary identity.** When a machine agent promotes to a controller today, it restarts the same binary with a different command. This requires special custom handling of the controller agent in the machine agent, i.e. leaking the logic that should reside in the controller charm into the machine agent.
 
 ## Specification
 
 ### Goals
 
-- Make snap the standard delivery and upgrade mechanism for new IAAS controllers
-- `jujud` (machine/unit agent) and `jujud-controller` (controller snap) are
-  truly separate binaries; `jujud` no longer links dqlite or domain services.
-- Preserve functional parity across supported deployment patterns, including HA
-  and airgapped environments.
-- The musl-gcc toolchain and `_deps/` static C library downloads are removed
-  from the build system.
+Make snap the standard delivery and upgrade mechanism for new IAAS controllers
+`jujud` (machine/unit agent) and `jujud-controller` (controller snap) are truly separate binaries; `jujud` no longer links dqlite or domain services.
+Preserve functional parity across supported deployment patterns, including HA and airgapped environments.
+The musl-gcc toolchain and `_deps/` static C library downloads are removed from the build system.
 
 ### Scope
 
 In scope:
 
-- Controllers are bootstrapped using a new controller snap without relying on
-  controller binaries from simplestreams.
-- Controllers can be upgraded by upgrading the snap revision; automatic upgrades
-  are prevented; the upgrader worker manages revision selection.
-- HA clusters work: machine agents detect the controller role, install the snap,
-  and transition cleanly to
-  `jujud-controller`.
-- Airgap deployments work via a snap store proxy or via pre-seeded snap and
-  assert blobs in the dqlite object store.
+- Controllers are bootstrapped using a new controller snap without relying on controller binaries from simplestreams.
+- Controllers can be upgraded by upgrading the snap revision; snap auto-updates are disabled so that upgrades only happen when explicitly initiated by the user.
+- HA clusters work: machine agents detect the controller role, install the snap, and transition cleanly to `jujud-controller`.
+- Airgap deployments work via a snap store proxy or via pre-seeded snap and assert blobs in the dqlite object store.
 
 Out of scope:
 
-- Broad removal of simplestreams beyond controller-binary usage. Although the
-  long-term vision is to remove simplestreams entirely for agent binaries, this
-  project focuses on the controller binary path.
-- Using snap store to determine upgrade versions. Simplestreams will still be
-  source of truth for agent version number during upgrade and bootstrap.
-- Moving jujud agent binaries away from simplestreams. We'll still rely on
-  simplestreams for `jujud` binary distribution to machine/unit agents. This
-  will be addressed in a subsequent project.
+- Broad removal of simplestreams beyond controller-binary usage. Although the long-term vision is to remove simplestreams entirely for agent binaries, this project focuses on the controller binary path.
+- Using snap store to determine upgrade versions. Simplestreams will still be the source of truth for agent version number during upgrade and bootstrap.
+- Moving jujud agent binaries away from simplestreams. We'll still rely on simplestreams for `jujud` binary distribution to machine/unit agents. This will be addressed in a subsequent project.
 - Support for HA in CAAS controllers.
+- Replacing `caas/Dockerfile` with Rockcraft. Rockcraft is Canonical's standard toolchain for OCI images; the `jujud-controller` rock would likely take the `jujud-controller` snap as a build dependency. This will be addressed in a subsequent specification.
 
 ## Decisions
 
-**Separate snap repository.** Our release jobs can only handle one snap per
-repository. The `jujud-controller` snap is published from a new dedicated
-repository `github.com/juju/jujud-controller-snap`; the `juju` CLI snap remains
-in
-`github.com/juju/juju` repository.
+**Separate snap repository.** Our release jobs can only handle one snap per repository. The `jujud-controller` snap is published from a new dedicated repository `github.com/juju/jujud-controller-snap`; the `juju` CLI snap remains in `github.com/juju/juju` repository.
 
-**Snap and OCI must use the same binary.** The `jujud-controller` binary
-embedded in the snap and in the CAAS OCI image must have an identical SHA256
-hash. This can be achieved in CI build either by extracting the controller
-binary from snap during or by downloading the same pre-built binary from S3.
+**Snap and OCI must use the same binary.** The `jujud-controller` binary embedded in the snap and in the CAAS OCI image must have an identical SHA256 hash. This can be achieved in CI build either by extracting the controller binary from snap during or by downloading the same pre-built binary from S3.
 
-**Binary distribution via S3.** The main repository CI builds `jujud-controller`
-and uploads it to S3. The snap repository and the OCI build both download and
-package that same binary.
+**Binary distribution via S3.** The main repository CI builds `jujud-controller` and uploads it to S3. The snap repository and the OCI build both download and package that same binary.
 
-**`snap install --dangerous` is a dev-only tool.** It is acceptable in Stage 1
-for local developer workflow. The Stage 2 production path uses `snap download` →
-`snap ack` → `snap install ./` from the snap store.
+**`snap install --dangerous` is a dev-only tool.** It is acceptable in Stage 1 for local developer workflow. The Stage 2 production path uses `snap download` → `snap ack` → `snap install ./` from the snap store.
 
-**Auto-refresh is held.** The upgrader worker controls all snap upgrades
-explicitly.
+**Auto-refresh is held.** The upgrader worker controls all snap upgrades explicitly.
 
-**Assert files are stored in the object store.** The `.assert` file produced by
-`snap download` is stored alongside the
-`.snap` blob in the dqlite object store, ensuring both are available to all
-controller units via raft replication.
+**Assert files are stored in the object store.** The `.assert` file produced by `snap download` is stored alongside the `.snap` blob in the dqlite object store, ensuring both are available to all controller units via raft replication.
 
-**Upgrades go through the object store.** The upgrader worker downloads the new
-snap+assert from the dqlite object store and runs `snap ack` +
-`snap install ./`.
+**Upgrades go through the object store.** The upgrader worker downloads the new snap+assert from the dqlite object store and runs `snap ack` + `snap install ./`.
 
-**CAAS is unaffected by the snap path.** CAAS controllers run in OCI containers
-and do not use the snap install/upgrade flow.
+**CAAS is unaffected by the snap path.** CAAS controllers run in OCI containers and do not use the snap install/upgrade flow.
 
-**musl and `_deps` removed late.** The musl-gcc toolchain and the `_deps/`
-pre-built static C libraries downloaded from S3 at build time are removed in the
-final phase, after the snap path is fully the default. The S3 release
-artifacts (
-built binaries: `jujud-controller`, `jujud`, `jujuc`, etc.) are **kept** — they
-are used by `juju-release-jenkins` jobs.
+**musl and `_deps` removed late.** The musl-gcc toolchain and the `_deps/` pre-built static C libraries downloaded from S3 at build time are removed in the final phase, after the snap path is fully the default. The S3 release artifacts ( built binaries: `jujud-controller`, `jujud`, `jujuc`, etc.) are **kept** — they are used by `juju-release-jenkins` jobs.
 
-**Binary separation is delayed.** Binary separation is deferred until Stage 4 to
-avoid a transition period where two separate binaries must be maintained in
-simplestreams before snap takes over. Once the build and distribution of the
-controller binary is fully decoupled from the machine/unit agent binary, we can
-create a separate `jujud-controller`
-binary and refactor the agent binaries to exclude dqlite and api server
-dependencies.
+**Binary separation is delayed.** Binary separation is deferred until Stage 4 to avoid a transition period where two separate binaries must be maintained in simplestreams before snap takes over. Once the build and distribution of the controller binary is fully decoupled from the machine/unit agent binary, we can create a separate `jujud-controller` binary and refactor the agent binaries to exclude dqlite and api server dependencies.
 
 ## Implementation stages
 
@@ -168,14 +103,14 @@ This stage aligns CAAS packaging with the same controller binary used by the
 snap path. Release validation confirms that snap and CAAS artifacts contain
 identical controller binaries. Changes to CAAS runtime architecture are out of
 scope in this stage. At this point, we should be able to safely use controller
-snaps in all use cases although functionality is still behind feature flag.
+snaps in all use cases although functionality is still behind the feature flag.
 
 ### Stage 5 — Flag Default ON & Full Integration Tests
 
 This stage makes the snap path the default for new IaaS controllers and
 validates it through full end-to-end testing. Operator guidance for bootstrap,
 upgrade, HA, and airgap workflows is finalized. Although controller snap is used
-by default, feature flag still allows falling back to legacy distribution.
+by default, the feature flag still allows falling back to legacy distribution.
 
 ### Stage 6 — Legacy Removal
 
@@ -187,11 +122,11 @@ through simplestreams remains out of scope for this project.
 ## Risks
 
 - In juju we never tested the dynamic linking of the dq-lite and raft libraries,
-  so there is a risk that removing musl-gcc toolchain can take longer than
-  expected. As this happens at the last stage, it should not impact rest of the
+  so there is a risk that removing the musl-gcc toolchain can take longer than
+  expected. As this happens at the last stage, it should not impact the rest of the
   deliverables.
 - We don't have an exact plan for how machine agents will be replaced by the
-  controller snap during HA transition. Error handling and revert paths needs to
+  controller snap during HA transition. Error handling and revert paths need to
   be designed carefully. This is a critical path for HA and needs to be designed
   carefully to avoid leaving machines in an inconsistent state.
 
@@ -269,7 +204,7 @@ distribution mechanism for machine/unit agents is an open question.
 **Binary Separation:** Currently both `jujud` and `jujud-controller` link
 against all packages including dqlite and domain services. True separation
 means refactoring cmd/jujud to exclude controller-only imports, updating
-Makefile build tags and linkage, and stopping the rename of jujud-controller to
+Makefile build tags and linkage, and stopping the renaming of jujud-controller to
 jujud. Machine agents will run a smaller jujud binary without dqlite
 dependencies. This separation is coupled with HA because the
 machine-to-controller transition requires installing a different binary (the
