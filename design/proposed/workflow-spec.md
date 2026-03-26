@@ -45,25 +45,92 @@ In this target workflow, controller machines run `jujud` and `juju-controllerd` 
 1. Juju client provisions the controller machine and renders cloud-init configuration.
 2. Cloud-init acquires and starts both `juju-controllerd` and `jujud`:
    - Production:
-     - the target version is resolved from simplestreams;
-     - `juju-controllerd` is downloaded from the snap store;
-     - `jujud` is downloaded from simplestreams.
+     - the target version is resolved from simplestreams (existing mechanism, unchanged);
+     - the matching `juju-controllerd` snap revision is resolved from the snap store using the
+       Juju version as the channel qualifier (e.g. `juju-controllerd --channel=3.6/stable`);
+     - cloud-init runs `snap download juju-controllerd --channel=<version>/stable` to fetch the
+       snap and its assertion file from the store;
+     - immediately after installation, auto-refresh is held:
+       `snap refresh --hold juju-controllerd`;
+     - `jujud` is downloaded from simplestreams as today.
    - Development:
-     - both the `juju-controllerd` snap and `jujud` are provided by Juju client.
+     - `jujud` is built and uploaded by the Juju client when `--build-agent` is passed
+       (existing `BuildAgentTarball` path, unchanged);
+     - a new `--controller-snap=<path>` flag accepts the path to a locally built `.snap` file;
+       the client embeds the snap blob and its assert in cloud-init data and cloud-init
+       sideloads it with `snap install --dangerous <snap-file>`;
+     - the snap is **not** built automatically by the Juju client to avoid the cost of a full
+       snapcraft build on every bootstrap. The developer must build and provide it separately
+       (see snap build cost notes below).
    - Airgapped:
-     - `juju-controllerd` is downloaded from the snap proxy;
-     - `jujud` is downloaded through the simplestreams proxy.
+     - `juju-controllerd` is downloaded from the snap store proxy;
+     - `jujud` is downloaded through the simplestreams proxy;
+     - both a Snap Proxy and a SimpleStreams Proxy must be configured.
 3. Cloud-init waits until `juju-controllerd` has started successfully.
 4. The `juju-controllerd` bootstrap worker triggers deployment of the controller charm.
 5. The `juju-controllerd` bootstrap worker stores the snap and assert in object store.
 6. The `juju-controllerd` bootstrap worker stores tools in the object store.
 7. The controller charm verifies peer relations and confirms that the `juju-controllerd` snap version matches the charm version.
 
+#### Bootstrap params and cloud-init changes
+
+The following additions to the bootstrap path are required:
+
+- **New `--controller-snap=<path>` CLI flag**: accepts a path to a local `.snap` file for the
+  development path. The client also looks for an adjacent `<snap-name>.assert` file; if present,
+  it is embedded alongside the snap blob. This flag is separate from `--build-agent` because
+  building a snap is significantly heavier than building a binary tarball (see snap build cost
+  notes below), and the two artifacts have independent lifecycles.
+
+- **`StateInitializationParams` additions**: two new optional fields carry the controller snap
+  blob and its assert blob when using the development path. Production and airgapped paths leave
+  these fields empty and rely on cloud-init pulling directly from the store or proxy.
+
+- **Cloud-init template changes**:
+  - Production/airgapped: emit a `snap download` + `snap ack` + `snap install` sequence targeting
+    the versioned channel, followed by `snap refresh --hold`.
+  - Development (snap provided): emit an inline file write for the `.snap` and `.assert` blobs,
+    followed by `snap ack <assert-file>` + `snap install --dangerous <snap-file>` +
+    `snap refresh --hold`.
+
+- **Version coherence check**: after cloud-init installs the snap, it must verify that the
+  installed snap's version matches the target Juju version before proceeding. This prevents a
+  mismatch between the simplestreams-resolved version and the actual snap revision from reaching
+  the bootstrap worker.
+
+#### Snap build cost and workarounds
+
+Building the `juju-controllerd` snap with `snapcraft` is a heavy operation (it creates an
+isolated build environment and recompiles the binary from scratch) and is not suitable as an
+on-every-bootstrap step for development. Practical workarounds:
+
+1. **Build once, reuse**: run `snapcraft` once and pass the resulting `.snap` to every subsequent
+   `juju bootstrap --controller-snap=./juju-controllerd.snap`. Rebuild only when the binary or
+   snap metadata changes.
+2. **`snapcraft pack` with pre-built binary**: place the compiled `juju-controllerd` binary into
+   the snap prime directory, then run `snapcraft pack prime/` to assemble the `.snap` without
+   a full rebuild. This reuses an existing binary (e.g. one compiled with `go build`) and only
+   does the snap packaging step, which is fast.
+3. **Download from CI**: download a pre-built `.snap` from a CI artifact (e.g. a GitHub Actions
+   run) and pass it via `--controller-snap`. This avoids any local build entirely.
+
+#### snapcraft.yaml location
+
+The `juju-controllerd` snap does not require its `snapcraft.yaml` to live in this repository.
+Launchpad's current build system supports one snap per repository, and this repo already hosts
+the `juju` CLI snap. Keeping the controller snap in a separate repository avoids that
+constraint and allows independent Launchpad and store pipelines. The development path with
+`--controller-snap` only requires a local `.snap` file, not a build system integration in this
+repo. A final decision on repository structure is recorded in `spec.md`.
+
 Notes:
 
 - `juju-controllerd` is snap-managed from first successful bootstrap.
 - `jujud` runs as machine-agent along with `juju-controllerd` and is not replaced by the snap.
-- The controller charm understand the bootstrap process for the `controller/0` is different than the others.
+- The controller charm understands that the bootstrap process for `controller/0` is different
+  from subsequent units.
+- `--build-agent` and `--controller-snap` are independent flags and can be combined: `--build-agent`
+  rebuilds `jujud` from source; `--controller-snap` provides the pre-built controller snap.
 
 ### Controller scale process (HA)
 1. Juju initiates controller scale-out with `juju add-unit` command.
@@ -96,9 +163,20 @@ Notes:
 
 **Required Proxy Services**: Standardize on a dual-proxy configuration for air-gapped environments. Deployments in these environments must provide both a Snap Proxy and a SimpleStreams Proxy to facilitate secure, internal access to all necessary resources.
 
+**Separate `--controller-snap` flag**: a new `--controller-snap=<path>` flag is introduced for the development workflow rather than extending `--build-agent`. `--build-agent` continues to handle only the `jujud` tarball. The controller snap is not built automatically by the client because the snapcraft build cost is too high for iterative development.
+
+**snapcraft.yaml in a separate repository**: the controller snap's build configuration lives in a dedicated repository to avoid Launchpad's one-snap-per-repo constraint. This repo only consumes the resulting `.snap` file via the `--controller-snap` flag.
+
+**Snap version resolution for production**: the snap store channel naming convention `juju-controllerd/<major>.<minor>/stable` maps Juju version numbers to snap revisions. The Juju client resolves the target version from simplestreams and constructs the matching channel name to pass to cloud-init.
+
+**Snap auto-refresh held immediately**: after installation (by any path), `snap refresh --hold juju-controllerd` is executed immediately so that the upgrader worker and controller charm control all snap upgrades explicitly.
+
+**Version coherence enforced before bootstrap worker starts**: cloud-init verifies that the installed snap version matches the simplestreams-resolved target version before signalling readiness to the bootstrap worker.
+
 ## Open Questions
 
 1. During HA scale-out, what is the exact failure-handling policy when snap installation fails on a candidate controller unit?
-2. How is the target version determined during upgrade? Does charm finds the target version from simplestreams? How about the build-agent case? How about the user-specified version case?
+2. How is the target snap revision identified during `juju upgrade-controller`? Does the charm query simplestreams for the target version and then resolve the corresponding channel, or does the client pass the resolved revision directly to the charm?
+3. When `--controller-snap` is not provided and the feature flag is ON, should bootstrap fail with a clear error, or silently fall back to the production snap-store path even in a development build?
 
 ## Further Information
