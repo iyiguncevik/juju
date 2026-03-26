@@ -113,13 +113,13 @@ This section describes the major code areas that will be modified during the
 snap migration. Understanding these areas helps with planning and executing the
 work.
 
-**Snap Build Infrastructure:** The snap build system needs to move to a
-separate repository because Launchpad can only publish one snap per repository.
-The new `github.com/juju/jujud-controller-snap` repo will contain the snapcraft
-definition, CI workflows for building and publishing to the snap store, and
-logic to download the pre-built `jujud-controller` binary from S3 during snap
-build. This separation allows the main repo to continue building the CLI snap
-on Launchpad while the controller snap is built via GitHub Actions.
+**Snap Build Infrastructure:** Because the current build system is limited to
+one snap per repository, we must decide between creating a standalone
+repository for the controller snap or employing a workaround. A separate
+repository would allow the main repo to maintain its CLI snap on Launchpad
+while the controller snap utilizes GitHub Actions and S3-hosted binaries. A
+final decision on which approach to take will be made later in a different
+specification.
 
 **Feature Flag System:** A new `ControllerSnap` feature flag gates all
 snap-specific runtime behavior throughout the codebase. This allows the snap
@@ -153,13 +153,7 @@ dispatches to either the legacy PopulateAgentBinary function or the new
 PopulateSnapAgentBinary function. This keeps both paths functional during the
 transition period.
 
-**Upgrader Worker:** The upgrader worker runs on every agent and watches for
-new versions, downloads binaries, and triggers restarts. For controllers using
-the snap path, it needs to download snap+assert files from the object store
-(via API endpoints), run snap ack and snap install commands, and apply snap
-refresh hold to prevent automatic upgrades. The upgrade coordination between
-multiple HA controller units remains unchanged since the object store already
-handles replication.
+**Upgrader Worker:** The upgrader worker runs on every agent and watches for new versions, downloads binaries, and triggers restarts. For controllers using the snap path, snap and assert files also need to be downloaded. Moreover, some of this functionality will be moved from the upgrader worker to the controller charm.
 
 **API Binary Endpoints:** The controller API serves agent binaries to machines
 via HTTP endpoints in apiserver/tools.go. New endpoints are needed to serve
@@ -180,20 +174,11 @@ distribution mechanism for machine/unit agents is an open question.
 
 **Binary Separation:** Currently both `jujud` and `jujud-controller` link
 against all packages including dqlite and domain services. True separation
-means refactoring cmd/jujud to exclude controller-only imports, updating
-Makefile build tags and linkage, and stopping the rename of jujud-controller to
-jujud. Machine agents will run a smaller jujud binary without dqlite
-dependencies. This separation is coupled with HA because the
-machine-to-controller transition requires installing a different binary (the
-snap).
+means separation of concerns, i.e. the juju-controller will not have machine
+workers. Machine agents will run a smaller jujud binary without dqlite
+dependencies.
 
-**HA Snap Installation Logic:** When a machine agent determines it should
-become a controller (via HA), it needs to install the jujud-controller snap
-before restarting. This requires new detection logic in the machine agent
-startup, an API endpoint to download snap+assert from the controller's object
-store, local snap installation commands, and proper error handling for
-installation failures. An alternative solution is to start the agent as a
-controller from the beginning.
+**HA Snap Installation Logic:** In the HA scale-out workflow, `juju add-unit` creates a new controller candidate machine through `juju-controllerd`, and cloud-init starts `jujud` on that machine. `jujud` (via the uniter) determines that the controller charm must be deployed. For units other than `controller/0`, the charm downloads the controller snap from object store, installs it, writes the `juju-controllerd` agent configuration, and starts `juju-controllerd`.
 
 **Makefile and Build System:** The Makefile currently uses musl-gcc for static
 linking and downloads pre-built dqlite/raft/libuv static libraries into the

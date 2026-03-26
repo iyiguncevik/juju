@@ -1,408 +1,284 @@
-# Details of controllers as a snap
+# Controller-as-a-snap rollout details
 
-## Current state
-ey files involved:
+This document captures the updated rollout plan after confirming that running
+two independent controller agents in parallel is not viable.
 
-**Current binary situation:**
-- `jujud-controller` is built from `cmd/jujud-controller/`, **renamed to `jujud`** by Makefile (lines 318, 326, 391)
-- Both `cmd/jujud` and `cmd/jujud-controller` link against the same packages (including dqlite, domain services)
-- Binary is uploaded to S3 (`s3://juju-qa-data/{STAGING_ROOT}/build-{COMMIT}/agents/`)
-- Snap build downloads binary from S3, packages it
-- OCI build copies binary from `_build/` directory
-- **Result: Same binary everywhere today** (S3 → Snap → OCI have identical hashes)
+The plan is incremental and PR-friendly, with explicit feature-flag transition
+steps before final cleanup.
 
-**Current HA flow:**
-1. `juju add-unit` adds a new machine to controller cluster
-2. Machine starts as machine agent (runs `jujud`)
-3. Machine agent detects it should be a controller (checks dqlite cluster config)
-4. Agent restarts itself — **same binary, different command** (`jujud` vs `jujud-controller`)
-5. Controller charm is deployed
+## Stage summary
 
-| File                                              | Current role                                                                                         |
-| ------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| `cmd/jujud-controller/`                           | Controller binary entry point — already separate                                                     |
-| `cmd/jujud/`                                      | Machine/unit agent binary — currently includes controller code paths                                 |
-| `snap/snapcraft.yaml`                             | Builds `jujud-controller` snap (core24, musl, static dqlite libs from S3)                            |
-| `caas/Dockerfile`                                 | Builds OCI image by copying pre-built binaries from `_build/` directory                              |
-| `Makefile`                                        | Uses `musl-gcc`, `CGO_ENABLED=1`, `-extldflags '-static'`; downloads static libs from S3             |
-| `internal/cloudconfig/userdatacfg.go`             | `installSnap()` calls `sudo snap install --dangerous`; `addDownloadToolsCmds()` curls `tools.tar.gz` |
-| `internal/bootstrap/agentbinary.go`               | `PopulateAgentBinary()` reads `tools.tar.gz` from disk, uploads to object store                      |
-| `internal/worker/upgrader/upgrader.go`            | Downloads `tools.tar.gz` via HTTP from controller API                                                |
-| `domain/agentbinary/service/simplestreamstore.go` | Falls back to simplestreams for binary discovery                                                     |
-| `core/snap/assertions.go`                         | `LookupAssertions()` already exists — fetches assertions from snap store proxy                       |
-| `internal/packaging/manager/snap.go`              | `Snap.Install()`, `Snap.ChangeChannel()` — snap manager exists                                       |
-| `apiserver/tools.go`                              | HTTP handler serving agent binaries from object store or simplestreams                               |
+- **Stage 1 — Bootstrap (Steps 1–5):** This stage delivers controller bootstrap
+on the new path: feature-flagged rollout, controller/machine agent coexistence,
+dedicated controller snap adoption, production/dev/airgap source-resolution
+behavior, and machine/controller binary split.
 
+- **Stage 2 — Upgrade and HA (Steps 6–8):** This stage establishes HA scale-out
+charm-driven for non-`controller/0` units with required checks, and controller
+upgrade follows explicit snap-distribution sequencing.
 
-## Stage Details
+- **Stage 3 — Release & Cleanup (Steps 9–10):** This stage finalizes rollout by
+making the new path default, removing feature-flag branching, then performing
+post-flag machine-binary cleanup (`jujud` without controller-only API
+server/dqlite dependencies).
 
-### Stage 1 — Snap Infrastructure & Dev Workflow (Single Controller)
+## Rollout stages
 
-#### Outcome
+### Stage 1 — Bootstrap (Steps 1–5)
 
-The dedicated repository `github.com/juju/jujud-controller-snap` is set up with CI that
-builds and publishes the `jujud-controller` snap to the snap store. The `ControllerSnap`
-feature flag exists and developers can bootstrap/upgrade **single-node controllers** using
-locally built `.snap` files without needing snap store access. This enables the team to
-iterate on the snap install/upgrade flow. **HA is explicitly not supported yet** — that's Stage 4.
-The existing build system (musl, S3, Dockerfile, single binary with rename) is unchanged.
+### Step 1 — Feature flag + install Juju snap on controller (do not start)
+
+#### Delivered behavior
+
+With feature flag ON, bootstrap installs the Juju snap package on controller
+machines, but does not start an additional controller process yet.
+
+Legacy runtime remains authoritative.
 
 #### Tasks
 
-##### 1.1 — Create `github.com/juju/jujud-controller-snap`
-- Launchpad already publishes the `juju` CLI snap from this repository and cannot publish
-  a second snap from the same repo due to infrastructure constraints
-- Create **`github.com/juju/jujud-controller-snap`** as a dedicated repository:
-  - Contains `snapcraft.yaml` (migrated from `snap/snapcraft.yaml` in this repo)
-  - Contains GH Actions CI for building and publishing the snap to the snap store
-  - Downloads `jujud` binary from S3 during snap build (renamed `jujud-controller` as today)
-- Remove `snap/snapcraft.yaml` from this repository once the new repo is set up
-  (the `snap/` directory stays only for the CLI snap built on LP)
-- All snap build and publish runs originate from `github.com/juju/jujud-controller-snap`
+1. Add/confirm feature flag guard for new bootstrap path.
+2. Add bootstrap/cloud-init install logic for Juju snap on controller machine.
+3. Ensure no new controller service is started in this step.
+4. Preserve existing bootstrap path when flag is OFF.
 
-##### 1.2 — Feature flag
-- Add `ControllerSnap` constant in `internal/featureflag/`
-- All snap-specific runtime behaviour is gated on `featureflag.ControllerSnap`
-- Flag is `false` by default in Stage 1–Stage 4 releases
-- Document the flag in `docs/reference/`
+#### Acceptance criteria
 
-##### 1.3 — `juju bootstrap` accepts a local snap file (dev workflow)
-- Add `--controller-snap=<path>` option to the bootstrap command (feature-flagged)
-- In `internal/cloudconfig/userdatacfg.go`, add `addLocalSnapInstallCmds()` (flag ON):
-  1. Upload the local `.snap` file to the instance via `AddRunBinaryFile`
-  2. `snap install --dangerous ./<snap>`
-  3. `snap refresh --hold jujud-controller`
-- Keep existing `tools.tar.gz` path when flag is OFF
-- **Explicitly reject bootstrap with `--to` or HA flags when using controller snap** — HA not yet supported
-
-##### 1.4 — Store snap in dqlite object store from local file
-- In `internal/bootstrap/agentbinary.go`, add `PopulateSnapAgentBinary()` (flag ON):
-  1. Read `.snap` (and optional `.assert`) files from disk after install
-  2. Store both blobs in the object store:
-     `agent-binaries/<version>-<arch>.snap` and `agent-binaries/<version>-<arch>.assert`
-  3. Record metadata (version, arch, snap revision, assert SHA256) in `agent_binary` table
-  4. Return cleanup func that removes files from disk after upload
-- Extend `domain/agentbinary/` DDL: add `snap_revision` and `assert_object_path` columns
-- Extend `AgentBinaryStore` interface with `AddSnapAgentBinary()` / `GetSnapAgentBinary()`
-
-##### 1.5 — Bootstrap worker dispatch (IAAS path)
-- `internal/worker/bootstrap/worker.go`: `seedAgentBinary()` dispatches to
-  `PopulateSnapAgentBinary` when flag is ON
-
-##### 1.6 — `juju upgrade-controller` accepts a local snap file (dev workflow)
-- Add `--controller-snap=<path>` and `--controller-assert=<path>` options
-- Client uploads the local snap+assert pair via API to the controller's object store
-- Add API facade method to accept snap+assert blobs and store them
-- Upgrader worker on each machine (flag ON):
-  1. Fetches `.snap` + `.assert` from object store via controller API
-  2. `snap ack <assert-file>`
-  3. `snap install ./<snap-file>`
-  4. `snap refresh --hold jujud-controller`
-  5. Exits with `UpgradeReadyError` (existing restart mechanism)
-
-##### 1.7 — Single-controller validation
-- Integration test: bootstrap single LXD controller with `--controller-snap`, verify works
-- Integration test: upgrade single controller with `--controller-snap`, verify works
-- Explicitly test that `juju enable-ha` is rejected when controller snap is in use
+- Flag OFF: behavior unchanged.
+- Flag ON: snap is present on controller machine after bootstrap.
+- No additional controller process is started yet.
 
 ---
 
-### Stage 2 — IAAS Production: Snap Store (Single Controller)
+### Step 2 — Start machine agent and controller agent together (same binary)
 
-#### Outcome
+#### Delivered behavior
 
-IAAS controllers bootstrap and upgrade from the snap store using the fully correct install
-flow: `snap download` → `snap ack` → `snap install ./` → `snap refresh --hold`. Airgap
-deployment works via the existing snap store proxy config. Simplestreams is bypassed for
-agent binary discovery. **HA is still not supported** — that's Stage 4. All behind the
-`ControllerSnap` feature flag.
+Controller machine starts machine-agent and controller-agent processes together,
+using the same underlying binary with different configuration/command roles.
+
+Controller path becomes active without machine-agent restart dance.
 
 #### Tasks
 
-##### 2.1 — `snap download` flow in cloud-init (flag ON, production path)
-In `internal/cloudconfig/userdatacfg.go`:
-- Add `addSnapStoreCmds()` (flag ON, no local snap file provided):
-  1. `snap download jujud-controller --channel=<channel> --target-directory=$bin`
-  2. `snap ack $bin/jujud-controller_<rev>.assert`
-  3. `snap install $bin/jujud-controller_<rev>.snap`
-  4. `snap refresh --hold jujud-controller`
-- When `SnapStoreProxyURL` / `SnapStoreProxyID` are set, pass `--store` to `snap download`
-- Remove `sudo snap install --dangerous` from the production path entirely
+1. Wire startup and process supervision for concurrent machine/controller agent
+   processes on controller machine.
+2. Route controller bootstrap responsibilities to the controller-agent process.
+3. Ensure controller charm creation is performed from controller-agent flow.
+4. Ensure controller agent and machine agent have separate config/log files.
+5. Add explicit readiness gate: cloud-init/bootstrap waits until
+   `juju-controllerd` has started successfully.
 
-##### 2.2 — Airgap bootstrap (snap proxy or pre-seeded object store)
-- When `SnapStoreProxyURL` is set: `snap download` routes through the proxy
-- When fully airgapped: snap+assert files provided via `--controller-snap` (from Stage 1)
-- The existing `SnapStoreAssertions` / `SnapStoreProxyURL` fields in `instancecfg.go`
-  (lines 165–178) are already wired
+#### Acceptance criteria
 
-##### 2.3 — Connected upgrade: controller downloads new snap from snap store
-- When `juju upgrade-controller` is run without a local snap file (flag ON):
-  1. Controller runs `snap download jujud-controller --channel=<channel>`
-  2. Stores snap+assert in object store
-  3. Signals upgrader workers
-- Reuses `core/snap/assertions.go` `LookupAssertions()` for assertion verification
-
-##### 2.4 — Serve snap+assert blobs from API
-- Extend `apiserver/tools.go` to serve:
-  `GET /model/{uuid}/tools/{version}/snap` and `.../assert`
-- Reads from `AgentBinaryStore.GetSnapAgentBinary()`
-
-##### 2.5 — Bypass simplestreams for agent binary discovery (flag ON)
-- In `domain/agentbinary/service/service.go`: when flag is ON, skip
-  `SimpleStreamsAgentBinaryStore` fallback entirely
-- `simplestreamstore.go` is not deleted yet — just not invoked
-- Simplestreams stays active for cloud image metadata (LXD image discovery)
-
-##### 2.6 — Single-controller production validation
-- Integration test: bootstrap single LXD controller from snap store, verify works
-- Integration test: upgrade single controller from snap store, verify works
-- Integration test: airgap bootstrap with snap proxy, verify works
-- Explicitly verify that `juju enable-ha` is still rejected
+- Both agents are running concurrently on `controller/0`.
+- Controller bootstrap/charm path is executed by controller-agent process.
+- Machine agent does not restart/flip mode to become controller.
+- Bootstrap fails clearly if `juju-controllerd` does not reach ready state.
 
 ---
 
-### Stage 3 — Binary Separation + HA
+### Step 3 — Introduce dedicated controller snap package (same binary)
 
-#### Outcome
+#### Delivered behavior
 
-The `jujud-controller` and `jujud` binaries are now truly separate — `jujud` no longer
-links dqlite or domain services. **HA is now supported** with the snap path: when
-`juju enable-ha` is run, the new machine agent detects it should be a controller, installs
-the `jujud-controller` snap, and transitions to controller role. This milestone couples
-binary separation with HA snap installation logic because they are tightly related.
+Controller uses a new dedicated controller snap package instead of Juju snap,
+while payload binary remains the same for now.
 
 #### Tasks
 
-##### 3.1 — Binary separation: Audit controller-only dependencies
-- Identify all packages that are controller-specific:
-  - `internal/dqlite`, `github.com/canonical/go-dqlite`, `raft`, etc.
-  - `domain/*` packages (domain services are controller-only)
-  - Controller-only workers (e.g., `bootstrap`, `dbaccessor`, `dblogpruner`)
-- Document which packages should be linked into `jujud-controller` only vs. shared
+1. Create and wire dedicated controller snap packaging/publishing flow.
+2. Switch bootstrap install path from Juju snap to controller snap.
+3. Keep runtime behavior from Step 2 unchanged.
+4. Validate artifact naming/versioning/channel behavior for controller snap.
 
-##### 3.2 — Binary separation: Refactor `cmd/jujud/` to exclude controller code
-- Ensure `cmd/jujud/main.go` does not import any controller-only packages
-- Move shared agent logic to a common package if needed
-- `cmd/jujud/` should only import:
-  - Core agent framework
-  - API client packages
-  - Workers that run on machine/unit agents (not controller-only workers)
-- Note: `cmd/jujud/run.go` already registers different commands than `cmd/jujud-controller/run.go`
+#### Acceptance criteria
 
-##### 3.3 — Binary separation: Stop renaming binaries in Makefile
-- **Remove** the rename logic (Makefile lines 318, 326, 391)
-- `jujud-controller` keeps its name
-- `jujud` keeps its name
-- Both binaries are produced in `_build/`
-- Update agent tarball creation to include both binaries (or separate tarballs)
-
-##### 3.4 — Binary separation: Update CI to handle two binaries
-- Update `juju-release-jenkins` jobs to upload both binaries to S3:
-  - `juju-{version}-{os}-{arch}.tgz` contains `jujud` (for machine/unit agents)
-  - `jujud-controller-{version}-{os}-{arch}.tgz` contains `jujud-controller` (for controllers)
-- Update S3 paths and tarball structure
-
-##### 3.5 — Binary separation: Update simplestreams
-- Add `jujud-controller` binary to simplestreams metadata generation
-- When flag is OFF, controllers still download via simplestreams
-- When flag is ON, controllers use snap (simplestreams bypassed)
-
-##### 3.6 — Binary separation: Update snap to package `jujud-controller`
-- Update `github.com/juju/jujud-controller-snap` to download `jujud-controller-{version}.tgz` from S3
-- Snap now packages the `jujud-controller` binary (not renamed `jujud`)
-
-##### 3.7 — Binary separation: Verify
-- Run `ldd jujud` and `ldd jujud-controller` to verify:
-  - `jujud-controller` links `libdqlite`, `libraft`, `libuv`
-  - `jujud` does **not** link these libraries
-- Verify binary sizes: `jujud` should be significantly smaller
-
-##### 3.8 — HA: Machine agent snap installation logic
-**Problem:** When `juju enable-ha` adds a machine, it starts as a machine agent (`jujud`).
-How does it transition to controller (`jujud-controller` snap)?
-
-**Solution:** Machine agent detects controller role and installs snap
-- In machine agent startup (`cmd/jujud/agent/machine.go` or worker manifold):
-  1. Check if this machine should be a controller (query API or check local config)
-  2. If yes and `ControllerSnap` flag is ON:
-     - Download snap+assert from controller object store (via API)
-     - `snap ack <assert-file>`
-     - `snap install ./<snap-file>`
-     - `snap refresh --hold jujud-controller`
-     - Exit with a new `TransitionToControllerError`
-  3. Systemd or upstart restarts the agent, which now runs from snap
-- Controller charm is deployed as before
-
-**Implementation:**
-- Add new worker or modify existing `machineagent` startup to detect controller role
-- Add API endpoint to download snap+assert for HA transition
-- Add `TransitionToControllerError` to signal restart needed
-- Update systemd/upstart scripts to handle the transition
-
-##### 3.9 — HA: Object store replication
-- Snap+assert blobs stored in dqlite object store → automatically replicated via raft
-- When HA unit 2/3 starts, it fetches snap+assert from object store (already replicated)
-
-##### 3.10 — HA: Integration tests
-- **Bootstrap HA test**: `juju bootstrap --to lxd/0,lxd/1,lxd/2` with snap, verify all units
-  install snap and become controllers
-- **Enable HA test**: bootstrap single controller with snap, then `juju enable-ha 3`, verify
-  new units install snap and transition correctly
-- **HA upgrade test**: bootstrap 3-unit HA, upgrade controller, verify all units upgrade snap
-- **Binary separation test**: verify machine agents run `jujud`, controllers run `jujud-controller`
+- Controller machine installs controller snap (not Juju snap) in Stage path.
+- Runtime behavior remains functionally identical to Step 2.
 
 ---
 
-### Stage 4 — CAAS + Binary Distribution Strategy
+### Step 4 — Production/airgap source matrix + version resolution
 
-#### Outcome
+#### Delivered behavior
 
-The CAAS controller OCI image is updated to use the renamed `jujud-controller` binary
-(following the binary separation in Stage 3). **Critical: The snap and OCI image use the same
-binary with identical hash.** This is achieved by establishing a centralized binary
-distribution mechanism where both the snap build and OCI build download the same pre-built
-binary from S3. The existing `caas/Dockerfile` is updated rather than replaced.
+Bootstrap resolves target version from SimpleStreams and acquires matching
+controller snap via the correct source matrix (production/dev/airgap).
 
 #### Tasks
 
-##### 4.1 — Establish binary distribution strategy
-**Problem:** After moving snap to a separate repo, how do we ensure snap and OCI use the
-**same** binary with identical hash?
+1. Implement target version resolution from SimpleStreams for controller
+   bootstrap path.
+2. In production path, download corresponding controller snap revision from snap
+   store.
+3. In airgapped path, enforce/use dual-proxy model:
+   - Snap Proxy for controller snap acquisition.
+   - SimpleStreams Proxy for version and `jujud` artifacts.
+4. Keep development path using locally provided artifacts.
+5. Add validation that resolved version and acquired snap revision are coherent.
 
-**Solution:** Centralized binary build + distribution via S3
-1. Main repo CI builds `jujud-controller` binary (as today, now with its proper name from Stage 3)
-2. Binary uploaded to S3: `s3://juju-qa-data/{STAGING_ROOT}/build-{COMMIT}/agents/juju-{version}-{os}-{arch}.tgz`
-3. `github.com/juju/jujud-controller-snap` CI downloads binary from S3, packages into snap
-4. `caas/Dockerfile` downloads binary from S3, packages into OCI image
-5. Both snap and OCI contain the **same binary with identical SHA256 hash**
+#### Acceptance criteria
 
-**Implementation:**
-- Verify `juju-release-jenkins` already uploads binary to S3 (it does)
-- Update `github.com/juju/jujud-controller-snap` `snapcraft.yaml`:
-  - Add part that downloads binary from S3 during snap build
-  - Use `plugin: dump` + `source: https://...` or custom build script
-- Document S3 URL structure and access requirements
-
-##### 4.2 — Update `caas/Dockerfile`
-- Update `caas/Dockerfile` to reference the renamed `jujud-controller` binary from Stage 3
-- `jujud-controller` binary is downloaded from S3 (same source as snap)
-- Both OCI image and snap are built from the same Git ref and **contain the same binary**
-
-##### 4.3 — Verify binary hash identity
-- Add CI check: compare SHA256 of `jujud-controller` binary in snap vs. OCI image
-- Fail the build if hashes differ
-- Add integration test: extract binary from snap and OCI, compare hashes
-
-##### 4.4 — CAAS integration tests
-- Verify CAAS bootstrap continues to work with the updated OCI image
-- Verify `ControllerSnap` flag has no effect on CAAS code paths
-- Verify binary hash matches snap binary
+- Bootstrap source selection works for production, development, and airgapped
+  modes.
+- Airgapped flow requires both Snap Proxy and SimpleStreams Proxy.
+- Resolved version from SimpleStreams drives corresponding snap acquisition.
 
 ---
 
-### Stage 5 — Flag Default ON & Full Integration Tests
+### Step 5 — Split binaries by snap role
 
-#### Outcome
+#### Delivered behavior
 
-All new IAAS installations use the snap path by default. Existing installations continue
-on the legacy binary path until they upgrade. A comprehensive integration test suite
-validates snap bootstrap, upgrade, HA, airgap, binary separation, and binary hash identity.
+Controller snap contains controller binary; Juju snap contains `jujud` machine
+binary.
 
 #### Tasks
 
-##### 5.1 — Flip `ControllerSnap` flag default to `true`
-- Change the default value of `featureflag.ControllerSnap` to `true`
-- The legacy `tools.tar.gz` path is now behind `!featureflag.ControllerSnap`
-- Document migration: existing controllers keep binary-based upgrades until they run
-  `juju upgrade-controller` to this version
+1. Build and package distinct machine/controller binaries.
+2. Ensure controller snap consumes controller binary artifact.
+3. Ensure Juju snap/machine-agent path consumes `jujud` binary artifact.
+4. Update CI/release wiring to publish and validate both artifacts.
 
-##### 5.2 — Integration test suite: `tests/suites/controller_snap/`
-- **Bootstrap test**: bootstrap LXD controller with snap; verify `snap list` shows
-  `jujud-controller`; verify snap is held (`snap refresh --list`)
-- **Upgrade test**: bootstrap at N-1 with snap, upgrade to N, verify snap revision changed
-- **HA bootstrap test**: bootstrap 3-unit HA; verify snap on all units
-- **HA enable test**: bootstrap single, enable HA, verify new units install snap
-- **HA upgrade test**: bootstrap 3-unit HA, upgrade, verify all units upgrade snap
-- **Airgap test**: bootstrap with `SnapStoreProxyURL`, verify no direct snap store access
-- **Binary separation test**: verify machine agents run `jujud` (no dqlite), controllers
-  run `jujud-controller` (from snap, with dqlite)
-- **Binary hash identity test**: extract `jujud-controller` from snap and OCI, compare hashes
+#### Acceptance criteria
 
-##### 5.3 — CI validation
-- Snap build in `github.com/juju/jujud-controller-snap` produces artifact for integration tests
-- OCI image build passes and produces multi-arch image
-- Verify both builds download the same binary from S3 (hash check in CI)
-
-##### 5.4 — Upgrade path documentation
-- Update `docs/howto/` for snap-based controller operations
-- Update `docs/reference/` for `--controller-snap` and `upload-agent-binary --snap`
-- Document binary separation: controller agents use snap, machine/unit agents use `jujud`
-- Document binary hash identity: snap and OCI use the same binary
-- Document HA transition: machine agents install snap to become controllers
+- Distinct binaries are produced and packaged in their intended snaps.
+- Controller runtime uses controller binary from controller snap.
+- Machine runtime uses `jujud` binary from Juju snap/machine path.
 
 ---
 
-### Stage 6 — Legacy Removal
+### Stage 2 — Upgrade and HA (Steps 6–8)
 
-#### Outcome
+### Step 6 — Upload bootstrap artifacts to object store (snap + assert + tools)
 
-The `ControllerSnap` feature flag is removed. Only the snap path remains for IAAS controllers.
-All `tools.tar.gz` distribution code for **controllers**, simplestreams **controller** binary
-infrastructure, musl build references, and `_deps/` S3 static library downloads
-are deleted. S3 release artifacts (`jujud-controller`, `jujud`, `jujuc`, etc.) are
-**not** removed — they are used by `juju-release-jenkins` and remain in S3.
-Machine/unit agents still use `tools.tar.gz` and simplestreams (not affected by this project).
+#### Delivered behavior
+
+Bootstrap path stores snap, assert, and tools artifacts in object store with
+consistent metadata for later HA/upgrade use.
 
 #### Tasks
 
-##### 6.1 — Remove musl-gcc and `_deps/` static library downloads
-- Remove `musl-install-if-missing` prerequisite from all `Makefile` targets
-- Remove S3 download logic from `scripts/dqlite/scripts/dqlite/dqlite-install.sh` that
-  populates the `_deps/` folder with pre-built static C libraries (dqlite, raft, libuv)
-- Use `apt`-provided `libdqlite-dev` / `libraft-dev` / `libuv1-dev` everywhere
-- Remove `musl-compat` part from any remaining snap build references
-- Update `Makefile`: replace `CC="musl-gcc"` with system gcc; drop `-extldflags '-static'`
-  from controller build
-- The controller binary becomes dynamically linked
-- **Note:** S3 release artifacts (final built binaries: `jujud-controller`, `jujud`, `jujuc`,
-  etc.) are **not** affected — they remain uploaded to S3 by `juju-release-jenkins` as today
+1. Implement bootstrap object-store upload for controller snap artifact.
+2. Implement bootstrap object-store upload for assertion artifact.
+3. Implement bootstrap object-store upload for tools artifact.
+4. Persist metadata needed for retrieval and validation of the artifact set.
+5. Make storage writes idempotent and retry-safe.
 
-##### 6.2 — Delete legacy controller tools.tar.gz distribution code
-- `internal/cloudconfig/userdatacfg.go`: remove `addDownloadToolsCmds()` for controllers
-  (keep for machine agents), remove legacy `installSnap()`
-- `internal/bootstrap/agentbinary.go`: remove the `tools.tar.gz` variant of
-  `PopulateAgentBinary()`; rename `PopulateSnapAgentBinary()` to `PopulateAgentBinary()`
-- `internal/worker/upgrader/upgrader.go`: remove tools.tar.gz download branch for controllers
-- Note: Machine/unit agents still use tools.tar.gz — only remove controller-specific paths
+#### Acceptance criteria
 
-##### 6.3 — Remove or replace `caas/Dockerfile`
-- If Rockcraft migration has been completed (see Open Questions), remove `caas/Dockerfile`
-- Otherwise, `caas/Dockerfile` remains as the sole CAAS image build path — no action needed
+- Successful bootstrap stores snap + assert + tools as one coherent artifact
+  set.
+- Metadata is consistent, retrievable, and retry-safe.
 
-##### 6.4 — Remove simplestreams from controller agent binary service
-- Delete `domain/agentbinary/service/simplestreamstore.go`
-- Delete associated mock and test files
-- Remove simplestreams lookups for **controller** agent binaries
-- Note: `environs/simplestreams` package itself stays — still used for:
-  - Cloud image metadata (LXD image discovery)
-  - Machine/unit agent binaries (still use simplestreams — out of scope for this project)
+---
 
-##### 6.5 — Remove `ControllerSnap` feature flag
-- Delete `featureflag.ControllerSnap`
-- Remove all `if featureflag.ControllerSnap` / `if !featureflag.ControllerSnap` branches
-- Delete flag documentation
+### Step 7 — Charm changes for HA scale-out (+ bootstrap checks)
 
-##### 6.6 — Snap hook cleanup
-- Remove `snap/local/wrappers/fetch-oci` if no longer needed
+#### Delivered behavior
 
-##### 6.7 — Final documentation pass
-- Update `internal/bootstrap/` `doc.go` to reflect snap-only bootstrap for controllers
-- Update CONTRIBUTING.md: no more musl; use `apt install libdqlite-dev` for development
-- Update `docs/explanation/` architecture docs
-- Document final binary distribution model:
-  - IAAS controller agents: `jujud-controller` snap (downloads binary from S3)
-  - Machine/unit agents: `jujud` binary (via tools.tar.gz or charm payload)
-  - CAAS: OCI image via Dockerfile (or Rockcraft if migrated; see Open Questions)
-  - Snap and OCI have identical `jujud-controller` binary hash
+HA scale-out is supported through charm-driven controller snap lifecycle on new
+controller units, with bootstrap and convergence checks aligned to
+`workflow-spec.md`.
 
+#### Tasks
 
+1. Update charm workflow for non-`controller/0` units to install/start
+   controller snap from object-store-provided artifacts.
+2. Integrate object-store artifact retrieval into charm/unit lifecycle.
+3. Add explicit `jujud`/uniter-driven decision path for deploying controller
+   charm on new units.
+4. Add/ensure bootstrap checks:
+   - peer relations are verified,
+   - installed `juju-controllerd` snap version matches charm version,
+   - `controller/0` bootstrap path remains explicitly distinguished from others.
+5. Add failure/recovery handling for scale-out convergence.
+
+#### Acceptance criteria
+
+- `juju add-unit` scale-out converges with controller snap lifecycle managed by
+  charm.
+- Non-`controller/0` path is driven by expected uniter/charm logic.
+- Peer-relation and snap/charm version checks are enforced.
+- Failed scale-out does not leave units in unrecoverable partial state.
+
+---
+
+### Step 8 — Upgrade flow via snap distribution (explicit sequence)
+
+#### Delivered behavior
+
+Controller upgrade uses snap-distribution workflow end-to-end, coordinated by
+Juju/charm with object-store-backed artifact flow and explicit sequencing.
+
+#### Tasks
+
+1. Implement explicit sequence:
+   1. `juju upgrade-controller` initiates upgrade and triggers charm refresh.
+   2. Charm resolves/downloads target snap revision.
+   3. `juju-controllerd` stores snap + assert in object store.
+   4. Charm installs snap and restarts `juju-controllerd`.
+   5. After controller restart/upgrade, Juju client initiates model upgrade.
+2. Preserve decoupled controller-upgrade vs model-upgrade contract.
+3. Add integration coverage for successful and failure upgrade paths.
+
+#### Acceptance criteria
+
+- Controller upgrade follows the defined sequence deterministically.
+- Model upgrade is triggered only after controller upgrade/restart success.
+- Upgrade behavior is observable and recoverable on failure.
+
+---
+
+### Stage 3 — Release & Cleanup (Steps 9–10)
+
+### Step 9 — Switch default to new path and remove feature flag
+
+#### Delivered behavior
+
+The new snap-based controller path becomes default behavior, and feature-flag
+branching is removed.
+
+#### Tasks
+
+1. Flip default behavior to the new controller-snap workflow.
+2. Remove feature-flag checks and temporary dual-path branching.
+3. Keep any required migration guards for existing deployed controllers.
+4. Update documentation to reflect new default and migration notes.
+
+#### Acceptance criteria
+
+- New path is default without explicit flag enablement.
+- Feature flag and major dual-path branches are removed.
+- Existing supported upgrade/migration paths remain functional.
+
+---
+
+### Step 10 — Post-flag cleanup: remove API server and dqlite from `jujud`
+
+#### Delivered behavior
+
+After flag removal and default switch, machine binary (`jujud`) no longer
+links/includes controller-only API server and dqlite responsibilities.
+
+#### Tasks
+
+1. Remove controller-only API server and dqlite dependencies from `jujud`.
+2. Refactor imports/build wiring so machine path stays functional.
+3. Add checks/tests to prevent regression of removed dependencies.
+
+#### Acceptance criteria
+
+- `jujud` builds and runs without API server/dqlite components.
+- Controller functionality remains available through controller binary path.
+
+## Notes on ordering
+
+- Steps 1–3 establish packaging/runtime flow first.
+- Step 4 establishes source/version parity across production/dev/airgap.
+- Steps 5–8 complete binary split, storage, HA, and upgrade behavior while flag
+  can still protect rollout.
+- Step 9 removes the flag and makes new behavior default.
+- Step 10 performs final machine-binary cleanup that is unsafe behind flag
+  branching.

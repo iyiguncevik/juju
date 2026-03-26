@@ -39,7 +39,9 @@ In scope:
 
 - Controllers are bootstrapped using a new controller snap without relying on controller binaries from simplestreams.
 - Controllers can be upgraded by upgrading the snap revision; snap auto-updates are disabled so that upgrades only happen when explicitly initiated by the user.
-- HA clusters work: machine agents detect the controller role, install the snap, and transition cleanly to `jujud-controller`.
+- HA clusters work with charm-managed controller lifecycle: new controller units
+  start with `jujud`, then install/start `juju-controllerd` from
+  object-store-provided snap artifacts.
 - Airgap deployments work via a snap store proxy or via pre-seeded snap and assert blobs in the dqlite object store.
 
 Out of scope:
@@ -60,50 +62,60 @@ Out of scope:
 
 **`snap install --dangerous` is a dev-only tool.** It is acceptable in Stage 1 for local developer workflow. The Stage 2 production path uses `snap download` → `snap ack` → `snap install ./` from the snap store.
 
-**Auto-refresh is held.** The upgrader worker controls all snap upgrades explicitly.
+**Auto-refresh is held.** Snap upgrades are explicitly controlled by Juju's
+controller-upgrade workflow (client orchestration plus charm-managed snap
+lifecycle), not by snapd auto-refresh.
 
 **Assert files are stored in the object store.** The `.assert` file produced by `snap download` is stored alongside the `.snap` blob in the dqlite object store, ensuring both are available to all controller units via raft replication.
 
-**Upgrades go through the object store.** The upgrader worker downloads the new snap+assert from the dqlite object store and runs `snap ack` + `snap install ./`.
+**Upgrades go through Juju workflow + object store.** During
+`juju upgrade-controller`, the controller charm resolves and downloads the
+target snap revision, `juju-controllerd` stores snap+assert in the dqlite
+object store, and the charm performs install/restart on controller units.
 
 **CAAS is unaffected by the snap path.** CAAS controllers run in OCI containers and do not use the snap install/upgrade flow.
 
 **musl and `_deps` removed late.** The musl-gcc toolchain and the `_deps/` pre-built static C libraries downloaded from S3 at build time are removed in the final phase, after the snap path is fully the default. The S3 release artifacts ( built binaries: `jujud-controller`, `jujud`, `jujuc`, etc.) are **kept** — they are used by `juju-release-jenkins` jobs.
 
-**Binary separation is delayed.** Binary separation is deferred until Stage 4 to avoid a transition period where two separate binaries must be maintained in simplestreams before snap takes over. Once the build and distribution of the controller binary is fully decoupled from the machine/unit agent binary, we can create a separate `jujud-controller` binary and refactor the agent binaries to exclude dqlite and api server dependencies.
+**Binary separation is a prerequisite.** The target workflow assumes
+controller machines run machine-agent and controller services as separate
+processes (`jujud` + `juju-controllerd`) from the beginning of the rollout.
+`jujud` remains distributed through simplestreams and excludes
+controller-specific services/dependencies.
 
 ## Implementation stages
 
-### Stage 1 — Snap Infrastructure & Dev Workflow
+### Stage 1 — Runtime Topology + Dev Bootstrap
 
-This stage establishes the snap path for IaaS controllers in development
-workflows. Teams can bootstrap and upgrade a single controller using a provided
-snap package, and required snap artifacts are stored for reuse. HA rollouts and
-production store-based behavior are out of scope in this stage.
+This stage establishes the agreed runtime topology in development workflows:
+controller machines run `jujud` and `juju-controllerd` concurrently, with
+controller lifecycle owned by the controller snap/charm path. Cloud-init can
+bootstrap the initial controller with both binaries and the bootstrap worker
+stores required snap/assert/tools artifacts in object store for later reuse.
 
-### Stage 2 — IAAS Production: Snap Store (Single Controller)
+### Stage 2 — IaaS Production Bootstrap Parity
 
-This stage makes the snap path production-ready for single-controller IaaS
-deployments. Bootstrap and upgrade use the snap store, including proxied airgap
-environments, and controller binary delivery no longer depends on simplestreams.
-HA support and fully offline upgrades without a proxy are out of scope in this
-stage.
+This stage makes bootstrap production-ready across production, development, and
+airgapped environments while preserving one workflow contract. Artifact sources
+vary by environment (store/proxy/local), but runtime topology remains the same.
+Simplestreams remains in scope for target-version resolution and for `jujud`
+distribution.
 
-### Stage 3 — Binary Separation + HA
+### Stage 3 — HA Scale-out via Charm Workflow
 
-This stage enables HA on the snap path and finalizes separation between machine
-and controller binaries. Machine agents can transition safely into the
-controller role, and multi-controller clusters run the controller snap
-consistently. CAAS alignment and legacy-path removal are out of scope in this
-stage.
+This stage enables controller HA scale-out using the agreed charm-centered flow.
+New controller units start with `jujud`, then the controller charm installs
+`juju-controllerd` from object-store-provided snap/assert and starts it.
+Role-switch transition logic in `jujud` remains out of scope because the target
+model is process coexistence, not binary/mode replacement.
 
-### Stage 4 — Binary Distribution Strategy + CAAS
+### Stage 4 — Controller Upgrade Orchestration
 
-This stage aligns CAAS packaging with the same controller binary used by the
-snap path. Release validation confirms that snap and CAAS artifacts contain
-identical controller binaries. Changes to CAAS runtime architecture are out of
-scope in this stage. At this point, we should be able to safely use controller
-snaps in all use cases although functionality is still behind the feature flag.
+This stage finalizes the agreed upgrade workflow: `juju upgrade-controller`
+orchestrates controller upgrade first, charm logic resolves/downloads target
+snap revision, `juju-controllerd` stores snap/assert in object store, and charm
+applies snap install/restart on controller units. Model upgrade continues
+through existing flow afterward.
 
 ### Stage 5 — Flag Default ON & Full Integration Tests
 
@@ -125,10 +137,9 @@ through simplestreams remains out of scope for this project.
   so there is a risk that removing the musl-gcc toolchain can take longer than
   expected. As this happens at the last stage, it should not impact the rest of the
   deliverables.
-- We don't have an exact plan for how machine agents will be replaced by the
-  controller snap during HA transition. Error handling and revert paths need to
-  be designed carefully. This is a critical path for HA and needs to be designed
-  carefully to avoid leaving machines in an inconsistent state.
+- During HA scale-out, failure handling for controller snap installation on a
+  candidate controller unit needs careful design. Retry/recovery paths must
+  avoid leaving the unit in a partially converged state.
 
 ## Affected Code Areas
 
@@ -206,17 +217,15 @@ against all packages including dqlite and domain services. True separation
 means refactoring cmd/jujud to exclude controller-only imports, updating
 Makefile build tags and linkage, and stopping the renaming of jujud-controller to
 jujud. Machine agents will run a smaller jujud binary without dqlite
-dependencies. This separation is coupled with HA because the
-machine-to-controller transition requires installing a different binary (the
-snap).
+dependencies. In the target workflow, controller machines run both `jujud` and
+`juju-controllerd` concurrently rather than switching one binary between machine
+and controller modes.
 
-**HA Snap Installation Logic:** When a machine agent determines it should
-become a controller (via HA), it needs to install the jujud-controller snap
-before restarting. This requires new detection logic in the machine agent
-startup, an API endpoint to download snap+assert from the controller's object
-store, local snap installation commands, and proper error handling for
-installation failures. An alternative solution is to start the agent as a
-controller from the beginning.
+**HA Snap Installation Logic:** During HA scale-out, new units start with
+`jujud`; the controller charm then installs the controller snap from
+object-store-provided snap+assert artifacts, writes configuration for
+`juju-controllerd`, and starts it. This flow requires robust error handling for
+installation/convergence failures so units do not remain partially converged.
 
 **Makefile and Build System:** The Makefile currently uses musl-gcc for static
 linking and downloads pre-built dqlite/raft/libuv static libraries into the
@@ -250,21 +259,22 @@ an open question.
 
 ## Open Questions
 
-**How does the machine agent detect it should become a controller?** The
-detection mechanism — whether via API query, local dqlite config, or a new
-signal — must be decided.
+**How are controller/0 and non-controller/0 bootstrap paths represented in charm
+logic?** The contract is agreed at a workflow level, but the exact relation
+data and state signaling details still need to be finalized.
 
-**Upgrade procedure for snaps:** The method for upgrading production controllers
-when using snaps is still to be determined.
+**Upgrade target-resolution policy:** The high-level upgrade workflow is agreed,
+but target-version resolution policy still needs detail (simplestreams source,
+build-agent behavior, and user-specified version handling).
 
 **How are assert files handled in fully airgapped upgrades?** When there is no
 snap proxy, the admin must supply snap and assert via
 `juju upgrade-controller --controller-snap`. The exact workflow needs
 documenting.
 
-**What happens if snap install fails during HA transition?** Retry logic, error
-handling, and rollback strategy must be designed. A failed transition must not
-leave the machine in an inconsistent state.
+**What happens if snap install fails during HA scale-out convergence?** Retry
+logic, error handling, and rollback strategy must be designed. A failed
+convergence must not leave the machine in an inconsistent state.
 
 **Should `caas/Dockerfile` be replaced with Rockcraft?** Rockcraft is
 Canonical's standard toolchain for OCI images. The Dockerfile is simpler to
