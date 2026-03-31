@@ -1,204 +1,215 @@
 ## Abstract
 
-This document defines the end-state technical solution for distributing and
-running Juju controller agents as a dedicated snap. It describes what each
-component does once implementation is complete.
+This document defines the technical implementation for the bootstrap flow of
+the controller snap path. It specifies the bootstrap-time contracts between:
 
-It complements `design/proposed/workflow-spec.md`, which describes workflow
-behavior. This document focuses on component responsibilities, interfaces, and
-implementation contracts.
+- juju client
+- cloud init
+- controller agent
+- charm
+
+The focus is implementation behavior from artifact selection through first
+controller start, with controller-agent worker design as the primary concern.
 
 ## Rationale
 
-The workflow specification defines sequence and behavior. Implementation still
-needs a precise technical contract for:
+`design/proposed/workflow-spec.md` describes sequence. This document defines
+the concrete technical contracts needed to implement that sequence without
+duplicating logic across layers.
 
-- command/config surfaces;
-- cloud-init and bootstrap internals;
-- worker/charm ownership boundaries;
-- artifact storage and API distribution contracts;
-- upgrade target decision ownership.
+The main driver is the controller agent worker topology in
+`cmd/jujud-controller/agent/model/manifolds.go`:
 
-Without this, logic can be duplicated across CLI, workers, and charm code.
+- several workers still call the API server even when running inside the
+  controller agent process;
+- controller-only workers can read/write state through local services directly;
+- machine-agent-only workers must not remain in controller model manifolds;
+- workers needed in both contexts require an explicit per-worker decision:
+  controller-specific copy, or a shared worker behind a data-access facade.
+
+Without this contract, bootstrap behavior remains harder to reason about,
+slower than needed, and more failure-prone.
 
 ## Scope
+TODO: This must be listing what the project handles in the bootstrap flow, not what spec covers.
 
 ### In scope
 
-- End-state component responsibilities for controller snap distribution.
-- End-state command/config/API contracts.
-- Domain metadata/storage model for controller snap and assertion artifacts.
-- Required decisions and unresolved decisions tied to implementation.
+- Bootstrap-time responsibilities for controller snap acquisition, delivery,
+  install, and first-start readiness.
+- Bootstrap command/config/API contracts.
+- Controller-agent worker loading and data-access strategy for model manifolds.
+- Artifact metadata and distribution contracts needed by bootstrap.
 
 ### Out of scope
 
 - Build system design or implementation (`make`, linking strategy, build jobs).
-- Snap packaging/release pipeline design.
+- Snap packaging and release pipeline design.
 - CI/CD job definitions.
+- Post-bootstrap lifecycle behavior.
 
-## Technical Specification (End State)
+## Technical Specification (Bootstrap Flow)
 
-### 1. juju CLI changes
+### 1. juju client
 
-#### 2.1 `juju bootstrap`
+Bootstrap contract:
 
-End-state bootstrap contract:
+- provision the initial controller machine;
+- resolve controller snap artifacts for the selected Juju version;
+- pass all controller snap install inputs into instance configuration;
+- upload/register required artifacts before bootstrap completion.
 
-- bootstrap provisions controller machine(s);
-- bootstrap supplies controller snap acquisition/install inputs to cloud-init;
-- bootstrap ensures controller artifacts are registered for controller use.
-
-Bootstrap version and artifact resolution is explicit:
+Version and artifact resolution:
 
 1. Determine target Juju version:
    - use `--agent-version` if supplied;
    - otherwise resolve from simplestreams (latest patch in configured stream).
 2. Resolve controller snap artifact for the same target version:
-   - `snapstore`: query snap store/proxy and select a revision whose snap
-     version matches the resolved Juju version;
-   - `local` / `local-dangerous`: inspect provided snap metadata and require
-     version match with the resolved Juju version.
+   - `local` / `local-dangerous`: inspect provided snap metadata and require version match with resolved Juju version.
+   - `snapstore`: query snap store/proxy and select a revision whose snap version matches resolved Juju version;
 3. Acquire artifacts:
-   - `snapstore`: download `.snap` and `.assert`;
-   - `local`: use provided `.snap` and `.assert`;
-   - `local-dangerous`: use provided `.snap` without assertion validation.
+   - `local`: upload provided `.snap` and `.assert` files
+   - `local-dangerous`: build and upload `.snap` without assertion validation
+   - `snapstore`: `.snap` and `.assert` will be downloaded by cloud-init
 
-Command surface includes:
+Command surface:
 
-- `--agent-version` for Juju version intent.
-- `--build-agent` for machine/unit `jujud` tools packaging only.
-- `--controller-snap <file>` and `--controller-snap-assert <file>` for explicit
-  local controller artifact input.
+- `--agent-version`
+- `--build-agent` (not only machine/unit `jujud` tools, but also the controller snap)
+- `--controller-snap <file>`
+- `--controller-snap-assert <file>`
 
-Controller snap upload behavior:
-
-- no extra "upload controller snap" flag is required;
-- when controller snap artifacts are selected (from store or local), bootstrap
-  uploads/registers them as part of normal bootstrap completion.
-
-Controller snap build behavior:
-
-- bootstrap does not define an in-command "build controller snap" step;
-- this avoids heavy snap rebuild work on each bootstrap run;
-- developer workflow is to reuse a prebuilt local snap (same artifact reused
-  across multiple bootstraps) or use snap store/proxy sourced artifacts.
-- bootstrap is artifact-consumer only; it does not require a controller
-  `snapcraft.yaml` to exist in this repository.
-- whether the snap is built from this repo or another repo is outside bootstrap
-  contract; bootstrap consumes the resulting `.snap`/`.assert` artifacts.
-
-Validation rules:
-
-- `--controller-snap` is required when source mode is `local` or
-  `local-dangerous`.
-- `--controller-snap-assert` is required when source mode is `local`.
-- local artifact version must match resolved Juju version.
-- architecture/base compatibility must be validated before install.
-- if no matching revision exists in snap store for resolved version, bootstrap
-  fails with an explicit version-resolution error.
-
-Additional bootstrap details that must be specified:
-
-- cloud-init receives snap proxy/assertion settings from instance config.
-- cloud-init performs `snap ack`/install flow for assertion-backed installs.
-- bootstrap records selected controller snap revision/channel in persisted
-  metadata.
-- bootstrap readiness requires successful controller runtime start on
-  `controller/0`.
-- artifact upload/registration failures abort bootstrap; no silent fallback path.
-
-#### 2.3 `controller-config jujud-controller-snap-source`
-
-This config key is the source-mode contract for controller snap acquisition.
-Supported values are:
-
-- `snapstore`
-- `local`
-- `local-dangerous`
-
-Validation remains enforced in `controller/config.go`.
-
-### 2. Cloud-init and instance configuration
+### 2. cloud init
 
 Primary component: `internal/cloudconfig/instancecfg`.
 
-Cloud-init/instancecfg responsibilities:
+Bootstrap responsibilities:
 
-- carry controller snap source-mode inputs;
+- carry source-mode and artifact inputs from `juju bootstrap`;
 - carry snap proxy inputs (`SnapStoreAssertions`, `SnapStoreProxyID`,
   `SnapStoreProxyURL`);
-- install and start required controller runtime services deterministically;
-- fail explicitly when controller snap install/assert processing fails.
+- execute deterministic `snap ack` / install / service start flow;
+- fail explicitly when assertion handling or snap install fails.
 
-Scripts and service setup must be idempotent.
+Cloud-init scripts and service setup must be idempotent.
 
-### 3. Controller Agent changes
+### 3. controller agent
 
-Controller artifacts are stored in object store and represented with explicit
-metadata. Required metadata fields:
+This is the primary implementation section.
 
-- Juju version target.
-- Snap revision/channel.
-- Artifact kind (`controller-snap`, `controller-assert`, `agent-tools`).
-- Hashes (SHA256/SHA384), size, and object-store identity.
-- Source mode (`snapstore`, `local`, `local-dangerous`).
+Primary focus file: `cmd/jujud-controller/agent/model/manifolds.go`.
 
-Data integrity contracts:
+#### 3.1 Bootstrap artifact contracts
 
-- hash verified before metadata registration;
-- artifact metadata immutable for a fixed version+revision+kind tuple;
-- object-store and metadata writes follow deterministic cleanup/error behavior.
+Controller artifacts are stored in object store with explicit metadata:
 
-#### 3.1. Bootstrap worker responsibilities
+- target Juju version;
+- snap revision/channel;
+- artifact kind (`controller-snap`, `controller-assert`, `agent-tools`);
+- hashes (SHA256/SHA384), size, and object-store identity;
+- source mode (`snapstore`, `local`, `local-dangerous`).
 
-Primary components:
+Integrity rules:
 
-- `internal/bootstrap/*`
-- `internal/worker/bootstrap/deployer.go`
+- verify hash before metadata registration;
+- keep metadata immutable for `(version, revision, kind)`;
+- use deterministic write/cleanup behavior on partial failures.
 
-Bootstrap worker responsibilities in end state:
+#### 3.2 Worker classification for `model/manifolds.go`
 
-- upload machine/unit tools artifacts as required for `jujud`;
-- upload controller snap and assertion artifacts;
-- register controller artifact metadata;
-- ensure artifacts are available to controller units via replicated object store.
+1. **Controller-only worker**
+   - Worker exists only for controller responsibilities.
+   - Action: keep in controller manifolds.
 
-#### 3.2. API server artifact distribution contracts
+  1a. **Controller-only worker requiring data-access change**
+    - Worker is controller-only but currently uses `APICallerName` for
+      model-local data.
+    - Action: remove controller-local API round-trips and switch to direct
+      state/domain services access.
 
-Primary component: `apiserver/tools.go` plus associated routing.
+2. **Machine-agent-only worker**
+   - Worker belongs to machine agent responsibilities and must not be loaded
+     in controller model manifolds.
+   - Action: remove from controller model manifold wiring.
 
-API responsibilities:
+3. **Shared worker (controller + machine)**
+   - Worker is needed in both contexts.
+   - Does not use `APICallerName`
+   - Action: keep in both manifolds
 
-- continue serving tools artifact endpoints for machine/unit agent binaries;
-- expose controller artifact download endpoints for snap/assert retrieval;
-- enforce existing request authentication/authorization and model/controller
-  scoping;
-- return deterministic HTTP errors for missing/invalid artifact requests.
+  3a. **Shared worker requiring controller-side data-access change**
+    - Worker is shared, and the controller-side path currently uses
+      `APICallerName` for model-local data.
+    - Action: decide case by case:
+      - a controller-specific copy using local state/domain services; or
+      - a facade-backed shared worker with controller-local and machine-API
+        implementations.
 
-### 4. Controller charm/operator responsibilities
+#### 3.3 Manifold inventory from `model/manifolds.go`
 
-Controller charm/operator logic is the steady-state owner of controller snap
-lifecycle:
+Classification by manifold is:
 
-- install/refresh/restart controller snap;
-- enforce controller-unit convergence to the selected target revision;
-- apply peer/readiness checks before declaring a unit converged;
-- surface actionable blocked/error unit state on failures;
-- execute retry-safe, idempotent operations.
+- `commonManifolds`:
+  - `agent` → `3. Shared worker`
+  - `clock` → `3. Shared worker`
+  - `api-config-watcher` → `3. Shared worker`
+  - `api-caller` → `3. Shared worker`
+  - `provider-service-factories` → `1. Controller-only worker`
+  - `domain-services` → `1. Controller-only worker`
+  - `lease-manager` → `1. Controller-only worker`
+  - `http-client` → `1. Controller-only worker`
+  - `api-remote-relation-caller` → `1. Controller-only worker`
+  - `log-sink` → `1. Controller-only worker`
+  - `logging-config-updater` → `3a. Shared worker requiring controller-side data-access change` ⚠️
+  - `not-dead-flag` → `1. Controller-only worker`
+  - `is-responsible-flag` → `1. Controller-only worker`
+  - `valid-credential-flag` → `3a. Shared worker requiring controller-side data-access change` ⚠️
+  - `migration-fortress` → `3. Shared worker`
+  - `migration-inactive-flag` → `3a. Shared worker requiring controller-side data-access change` ⚠️
+  - `migration-master` → `1a. Controller-only worker requiring data-access change` ⚠️
+  - `charm-revisioner` → `1. Controller-only worker`
+  - `remote-relation-consumer` → `1. Controller-only worker`
+  - `removal` → `1. Controller-only worker`
+  - `provider-tracker` → `1. Controller-only worker`
+  - `storage-provisioner` → `3a. Shared worker requiring controller-side data-access change` ⚠️
+  - `async-charm-downloader` → `1. Controller-only worker`
+  - `secrets-pruner` → `1a. Controller-only worker requiring data-access change` ⚠️
+  - `user-secrets-drain-worker` → `3a. Shared worker requiring controller-side data-access change` ⚠️
+  - `operation-pruner` → `1. Controller-only worker`
+  - `change-stream-pruner` → `3. Shared worker`
 
-## Component Change Matrix
+- `IAASManifolds` additions:
+  - `compute-provisioner` → `1a. Controller-only worker requiring data-access change` ⚠️
+  - `firewaller` → `1a. Controller-only worker requiring data-access change` ⚠️
+  - `instance-poller` → `1. Controller-only worker`
+  - `agent-binary-fetcher` → `1. Controller-only worker`
 
-| Component | End-state responsibility |
-| --- | --- |
-| `cmd/juju/commands/bootstrap.go` | Accept and pass controller artifact inputs required by bootstrap. |
-| `cmd/juju/commands/upgradecontroller.go` | Orchestrate controller upgrade command flow and post-controller model-upgrade sequencing. |
-| `controller/config.go` | Validate and expose `jujud-controller-snap-source` source-mode contract. |
-| `internal/cloudconfig/instancecfg/instancecfg.go` | Render cloud-init/service inputs for controller snap install and snap proxy assertion handling. |
-| `internal/bootstrap/*` | Ingest/upload/register controller artifacts during bootstrap. |
-| `internal/worker/bootstrap/deployer.go` | Orchestrate bootstrap uploader/deployer responsibilities. |
-| `domain/agentbinary/service/*` and state | Persist/query immutable controller artifact metadata and object-store references with hash checks. |
-| `apiserver/tools.go` (+ routing) | Serve tools and controller artifact endpoints with auth/scoping and deterministic error mapping. |
-| Controller charm/operator code | Own controller snap lifecycle convergence for bootstrap steady-state, HA, and upgrades. |
-| `internal/worker/upgrader/upgrader.go` | Handle `jujud` tools upgrades only. |
+- `CAASManifolds` additions:
+  - `caas-firewaller` → `1. Controller-only worker`
+  - `caas-model-operator` → `1a. Controller-only worker requiring data-access change` ⚠️
+  - `caas-model-config-manager` → `1a. Controller-only worker requiring data-access change` ⚠️
+  - `caas-application-provisioner` → `1a. Controller-only worker requiring data-access change` ⚠️
+
+No current entries in `model/manifolds.go` are classified as
+`2. Machine-agent-only worker`.
+
+Expected direction for bootstrap implementation from this classification:
+
+- workers already driven by `DomainServicesName`, provider services, or local value workers remain on local service paths;
+- workers using `APICallerName` are reviewed individually to remove controller-local API round-trips where not required;
+- workers that fundamentally require remote calls keep explicit API usage;
+- no machine-agent-only responsibilities are introduced into this manifold.
+
+### 4. charm
+
+The charm is responsible for bootstrap-time controller unit convergence:
+
+- consume selected controller artifact metadata;
+- ensure the controller snap is installed and services are started;
+- expose clear blocked/error states for bootstrap failures;
+- keep operations retry-safe and idempotent.
+
+Bootstrap readiness requires successful charm-driven convergence on
+`controller/0`.
 
 ## Decisions
