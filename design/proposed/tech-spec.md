@@ -13,7 +13,7 @@ controller start, with controller-agent worker design as the primary concern.
 
 ## Rationale
 
-`design/proposed/workflow-spec.md` describes sequence. This document defines
+`design/proposed/functional-spec.md` describes sequence. This document defines
 the concrete technical contracts needed to implement that sequence without
 duplicating logic across layers.
 
@@ -31,7 +31,9 @@ Without this contract, bootstrap behavior remains harder to reason about,
 slower than needed, and more failure-prone.
 
 ## Scope
-TODO: This must be listing what the project handles in the bootstrap flow, not what spec covers.
+
+This project handles only the bootstrap path for the first controller machine
+(`controller/0`) until control is handed to normal charm-managed operations.
 
 ### In scope
 
@@ -75,23 +77,64 @@ Version and artifact resolution:
 Command surface:
 
 - `--agent-version`
-- `--build-agent` (not only machine/unit `jujud` tools, but also the controller snap)
+- `--build-agent` (machine/unit `jujud` tools only)
 - `--controller-snap <file>`
 - `--controller-snap-assert <file>`
+- controller config `jujud-controller-snap-source` (`legacy`, `snapstore`,
+  `local`, `local-dangerous`)
 
 ### 2. cloud init
 
-Primary component: `internal/cloudconfig/instancecfg`.
+Primary implementation files:
+
+- `internal/cloudconfig/userdatacfg.go`
+- `internal/cloudconfig/instancecfg/instancecfg.go`
+- `internal/cloudconfig/cloudinit/cloudinit_ubuntu.go`
+
+Current bootstrap behavior (baseline):
+
+- `ConfigureJuju` downloads `jujud` tools (`addDownloadToolsCmds`), runs
+  `jujud bootstrap-state` (`configureBootstrap`), and starts the machine agent
+  (`addMachineAgentToBoot`).
+- Snap logic only configures snap proxy/store assertions
+  (`snap ack /etc/snap.assertions`, `snap set core proxy.store=...`).
+- There is no `juju-controllerd` snap install/start/version-check step.
 
 Bootstrap responsibilities:
 
 - carry source-mode and artifact inputs from `juju bootstrap`;
-- carry snap proxy inputs (`SnapStoreAssertions`, `SnapStoreProxyID`,
-  `SnapStoreProxyURL`);
+- carry snap proxy inputs (`SnapStoreAssertions`, `SnapStoreProxyID`, `SnapStoreProxyURL`);
 - execute deterministic `snap ack` / install / service start flow;
 - fail explicitly when assertion handling or snap install fails.
 
-Cloud-init scripts and service setup must be idempotent.
+Required changes for bootstrap flow:
+
+1. **Bootstrap parameter plumbing**
+   - Extend `StateInitializationParams` and `stateInitializationParamsInternal`
+     with controller snap fields for source mode, expected version/channel, and
+     optional inline snap/assert blobs.
+   - Update `Marshal`/`Unmarshal` and propagation from bootstrap CLI/config into
+     `InstanceConfig.Bootstrap`.
+2. **Controller snap install command generation**
+   - Add controller-snap command generation in `ConfigureJuju` with
+     mode-specific flow:
+     - `snapstore`: `snap download juju-controllerd --channel=<major.minor>/stable`,
+       then `snap ack`, then `snap install`;
+     - `local`: write embedded `.snap` and `.assert`, then `snap ack`, then
+       `snap install`;
+     - `local-dangerous`: write embedded `.snap`, then
+       `snap install --dangerous`.
+   - For all modes, execute `snap refresh --hold juju-controllerd`
+     immediately after install.
+3. **Bootstrap safety gates**
+   - Add version coherence check: installed snap version must match target Juju
+     version before bootstrap handoff.
+   - Add explicit readiness gate for `juju-controllerd` before cloud-init
+     reports bootstrap handoff complete.
+4. **Failure semantics**
+   - Keep fail-fast behavior (`set -xe`) and do not silently fall back across
+     source modes.
+   - Emit progress/error logs and remove temporary snap/assert files after use.
 
 ### 3. controller agent
 
@@ -148,6 +191,15 @@ Integrity rules:
 #### 3.3 Manifold inventory from `model/manifolds.go`
 
 Classification by manifold is:
+
+This inventory is scoped to `cmd/jujud-controller/agent/model/manifolds.go`
+only (the per-model engine).
+
+It does not include controller machine-level manifolds in
+`cmd/jujud-controller/agent/machine/manifolds.go` such as
+`object-store`, `watcher-registry`, or `model-worker-manager`.
+Those run in the machine engine and can also spawn additional child workers,
+which is why observed runtime worker counts can be much higher than this list.
 
 - `commonManifolds`:
   - `agent` → `3. Shared worker`
@@ -212,4 +264,11 @@ The charm is responsible for bootstrap-time controller unit convergence:
 Bootstrap readiness requires successful charm-driven convergence on
 `controller/0`.
 
-## Decisions
+## Design Decisions
+
+1. **Version mismatch policy**
+   - Decide whether version mismatch is warning or fatal.
+   - Recommended: mismatch is fatal before bootstrap worker handoff.
+
+2. **Snap storage location**
+   - Decide whether snaps/assertions are stored as charm resource or not.
