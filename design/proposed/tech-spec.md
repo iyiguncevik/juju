@@ -81,6 +81,8 @@ Acquire artifacts:
 
 ##### Bootstrap with published binaries
 
+###### Bootstrap with latest version
+
 Snap channels use a `<major.minor>/<risk>` format (e.g. `4.0/stable`). There is
 no built-in mechanism to install a specific patch release (e.g. `4.0.3`) by
 version number alone, which makes `--agent-version` semantically incompatible
@@ -89,10 +91,12 @@ with snap as an artifact source.
 **Selected approach**: drop `--agent-version` for the snap path and align with
 snap semantics. A channel always resolves to the current latest revision for
 that track, so Juju installs the latest revision in `<major.minor>/stable` by
-default. Users who require a specific revision pass `--controller-snap-revision`
-directly instead of a version string.
+default. Without `--agent-version`, the client queries simplestreams for the
+current `major.minor` track and selects the newest available patch for machine
+agents via `availableTools.Newest()`. This is already implemented and requires
+no new mechanism.
 
-The following alternatives for the controller snap were considered and rejected:
+The following alternatives were considered and rejected:
 
 - **Per-patch channels** (e.g. `4.0.3/stable`): Technically possible but
   diverges from snap conventions and creates significant channel management
@@ -103,41 +107,6 @@ The following alternatives for the controller snap were considered and rejected:
   per architecture, and the mapping must be updated for every patch release
   across every snap in the install set (controller snap, toolchain snap, etc.).
 
-###### Machine agent version without `--agent-version`
-
-Removing `--agent-version` raises a secondary question: machine agents deployed
-to provisioned machines are still downloaded from simplestreams (legacy path),
-so something must determine which version to fetch.
-
-Currently, when `--agent-version` is not supplied, the bootstrap code in
-`environs/bootstrap/tools.go` (`findPackagedTools`) passes a nil version to the
-simplestreams lookup. `findBootstrapTools` then builds a general constraint
-scoped to the current `major.minor` and selects the newest available patch via
-`availableTools.Newest()`.
-
-**Selected approach**: make this existing fallback the only path. Without
-`--agent-version`, the client always queries simplestreams for the current
-`major.minor` track and installs the newest available patch. This is already
-implemented and requires no new mechanism. The accepted trade-off is that the
-machine agent patch version is not explicitly pinned — it follows whatever is
-newest in simplestreams at bootstrap time, consistent with snap channel
-semantics.
-
-The following alternatives were considered and rejected:
-
-- **Derive version from the installed controller snap**: After the controller
-  snap installs on the bootstrap machine, read its version (e.g. via
-  `snap info`) and use that exact version to constrain the simplestreams query.
-  This enforces strict version lockstep between controller and machine agents
-  but requires cloud-init to complete the snap install before the tools query
-  can run, adding sequencing complexity to the bootstrap flow.
-
-- **Resolve version from snap revision via snap store API**: When
-  `--controller-snap-revision` is provided, query the snap store to resolve the
-  Juju version that revision carries, then use that version to pin the
-  simplestreams search. Retains precise pinning without a separate version flag
-  but introduces a snap store API call from the client at bootstrap time.
-
 - **Bundle machine agent tools inside the controller snap**: Ship `jujud`
   binaries for all supported bases and architectures inside the controller snap
   (or a companion snap) and have cloud-init extract them locally, eliminating
@@ -145,122 +114,176 @@ The following alternatives were considered and rejected:
   but significantly increases snap size and diverges from the existing tools
   distribution model.
 
+###### Bootstrap with a snap revision
+
+When a user specifies `--controller-snap-revision` to pin to a particular snap
+revision, the actual Juju version carried by that revision is not known in
+advance. A snap revision is an opaque integer with no embedded version string,
+so the version can only be determined by downloading the snap from the store and
+inspecting its metadata. A further consequence of pinning to a revision is that
+the controller snap will not receive automatic updates from the store; any
+future upgrade must explicitly supply either a new revision via
+`--controller-snap-revision` or a channel.
+
+**Selected approach**: when `--controller-snap-revision` is provided, the client
+downloads the snap from the store during bootstrap, interrogates the downloaded
+file to discover the Juju version it carries, and then uploads it to the
+controller — following the same path as a locally supplied snap via
+`--controller-snap-path`. The discovered version is then used to constrain the
+simplestreams search for machine agent binaries. Upgrades from a
+revision-pinned controller require the operator to supply either a new
+`--controller-snap-revision` or a channel to override the pin.
+
+The following alternatives were considered and rejected:
+
+- **Derive version from the installed controller snap**: After the controller
+  snap installs on the bootstrap machine, read its version (e.g. via
+  `snap info`) and use that exact version to constrain the simplestreams query.
+  Enforces strict version lockstep but requires the simplestreams query to run
+  from the bootstrap machine rather than the client, which we want to avoid as
+  it adds sequencing complexity and couples the tools fetch to cloud-init
+  completion.
+
+- **Require `--agent-version` alongside `--controller-snap-revision`**: Allow
+  the user to specify the agent version explicitly. Avoids any discovery step
+  but is inconsistent with the other bootstrap paths, which do not require
+  `--agent-version`, and places an unnecessary burden on the operator to know
+  the exact version carried by a given revision.
+
+- **Use the latest available agent version**: Query simplestreams for the
+  newest `major.minor` patch without resolving the revision's version. Requires
+  no download or store query but does not allow the operator to reproduce an
+  earlier agent version, and risks a version mismatch between the machine agent
+  and the controller snap installed from the pinned revision.
+
+###### Bootstrap with a snap channel
+
+When bootstrapping with a snap channel, the controller snap is installed
+directly from the store by snapd on the bootstrap machine. The agent version
+must still be determined on the client side before the controller snap installs,
+so that compatible machine agent binaries can be fetched from simplestreams.
+Unlike the revision case, the version can be resolved without downloading the
+snap: `snap info juju-controller --channel=<channel>` returns the version
+currently published in that channel.
+
+**Selected approach**: run `snap info` for the given channel on the client
+during bootstrap to resolve the published version without downloading the snap.
+The returned version string is used to constrain the simplestreams query for
+machine agent binaries, ensuring the machine agent version is consistent with
+the controller snap that will be installed.
+
+The following alternatives were considered and rejected:
+
+- **Use simplestreams newest without version resolution**: Without resolving the
+  channel version, always fetch the newest `major.minor` patch from
+  simplestreams. Simpler, but risks a version mismatch between the controller
+  snap and machine agents if the two sources publish patch releases at different
+  times.
+
+- **Derive version from the installed controller snap**: After the controller
+  snap installs on the bootstrap machine, read its version (e.g. via
+  `snap info`) and use that exact version to constrain the simplestreams query.
+  Enforces strict lockstep but requires cloud-init to complete before the tools
+  query can run, adding sequencing complexity to the bootstrap flow.
+
 ##### Bootstrap with local build
 
 In this path the user provides the controller snap file directly via
-`--controller-snap-path`. The snap version is known from the file itself, so there
-is no ambiguity about which controller version will be installed.
+`--controller-snap-path`. The snap file is available locally, so there is no
+need to download it from the store. The approach to discovering the agent
+version and handling the snap installation depends on whether a snap assertion
+file is also provided.
 
-###### Machine agent version
+**Local snap with assert file**
 
-The same question from the published-binaries path applies here: without
-`--agent-version`, something must determine which machine agent version to fetch
-from simplestreams.
+When `--controller-snap-assert-path` is supplied alongside
+`--controller-snap-path`, the snap has a valid store-signed assertion. This case
+is equivalent to "Bootstrap with a snap revision" except the snap is already
+present on disk — there is no need to download it. The snap file is interrogated
+directly to extract the embedded Juju version string, which is then used to
+constrain the simplestreams search for compatible machine agent binaries.
 
-**Selected approach**: same as the published-binaries path — query simplestreams
-for the current `major.minor` track and select the newest available patch. The
-local snap carries an embedded version string; that string could in principle be
-used to pin the simplestreams query to an exact patch. However, doing so
-reintroduces explicit version coupling without a clear benefit, since the local
-snap is typically a development or pre-release build where the corresponding
-simplestreams entry may not yet exist. Using the newest-available patch in the
-`major.minor` track keeps the behavior consistent with the published-binaries
-path and avoids a hard failure when an exact match is absent.
+**Selected approach**: read the version from the local snap file metadata, use
+it to pin the simplestreams query to the matching `major.minor.patch`, then
+upload and install the snap with its assertion. The agent version is fully
+determined without any store interaction.
 
-The alternatives from the published-binaries path (derive version from snap
-metadata, snap store API lookup, bundled tools) apply equally here and are
-rejected for the same reasons.
+**Local snap without assert file (development build)**
 
-- **Require the user to supply agent binaries alongside the controller snap**:
-  When `--controller-snap-path` is provided, also require `--build-agent` or an
-  explicit agent tools archive so that the machine agent version is fully
-  determined by the user rather than resolved at runtime. This eliminates any
-  version ambiguity but significantly increases the burden on the user, who must
-  build or obtain matching agent binaries for every supported base and
-  architecture. It also conflates two independent concerns — controller snap
-  distribution and machine agent tools distribution — that are better kept
-  separate. Rejected in favour of the simplestreams newest-patch fallback.
+When only `--controller-snap-path` is provided with no assertion file, the snap
+is a locally built development or pre-release artifact. The snap must be
+installed with `snap install --dangerous` (no signature verification, no
+interface auto-connections). Because the snap may carry a version string that
+does not yet exist in simplestreams, strict version pinning can cause a hard
+failure.
 
-- **Always embed agent binaries inside the locally built snap**: Establish a
-  convention that locally built snaps always include the machine agent binaries
-  as part of the snap payload. Bootstrap extracts them from the snap rather than
-  fetching from simplestreams, making the agent version entirely determined by
-  the snap build. Rejected because this would make the local-build bootstrap
-  path diverge significantly from the production path — developers would be
-  testing a meaningfully different bootstrap flow, reducing confidence that
-  local validation reflects production behaviour.
+Snap interface connections that are normally granted automatically via store
+declarations (e.g. The focus is implementation behavior from artifact selection
+through first controller start, with controller-agent worker design as the
+primary concern. `snapd-control`, `lxd`, `system-observe`) are not established
+in dangerous mode. The controller snap relies on several of these interfaces to
+manage machines and interact with the system. Without them the controller may
+start but fail at runtime when it attempts to use those capabilities.
 
-###### Snap assertions and dangerous mode
+**Selected approach**: attempt to read the version from the local snap file
+metadata and use it to upload matching agent binaries if they are available.
+When no matching binaries exist locally for the exact version, fall back to the
+newest available patch in the `major.minor` track. This avoids a hard failure
+while keeping the behaviour as close as possible to the snap's actual version.
 
-A snap assertion file (`.assert`) is the store-signed certificate that
-establishes the snap's identity, confinement policy, and interface
-auto-connections. When the user provides `--controller-snap-path` without a
-corresponding `--controller-snap-assert-path`, no assertion is available and the
-snap must be installed with `snap install --dangerous`.
-
-Dangerous mode has two significant consequences:
-
-1. **No signature verification**: The snap is installed without cryptographic
-   proof of origin. This is acceptable in development and air-gapped scenarios
-   but is a deliberate security downgrade in production.
-
-2. **Interface auto-connections are not applied**: Snap interface connections
-   that are normally granted automatically via store declarations (e.g. The
-focus is implementation behavior from artifact selection through first
-controller start, with controller-agent worker design as the primary concern.
-`snapd-control`, `lxd`, `system-observe`) are not established in dangerous
-mode. The controller snap relies on several of these interfaces to manage
-machines and interact with the system. Without them the controller may start
-but fail at runtime when it attempts to use those capabilities.
-
-The following options exist:
-
-- **Derive install mode from provided arguments** (selected approach): if
-`--controller-snap-assert-path` is provided alongside `--controller-snap-path`,
-perform a normal `snap ack` + install. If only `--controller-snap-path` is
-given with no assertion file, treat the omission as an explicit opt-in to
-dangerous mode and install with `snap install --dangerous`. No separate flag or
-config key is needed. The interface limitation is documented as a known
-constraint of dangerous mode.
-
-- **Silently fall back to dangerous mode**: Install without assertions whenever
-the assert file is absent. Simple, but hides a significant behavioural change
-from the user and makes interface failures hard to diagnose.
-
-- **Manually connect required interfaces after install**: After a
-dangerous-mode install, emit `snap connect` commands for every interface the
-controller snap requires. This partially restores functionality but requires
-maintaining a hardcoded list of interfaces that must stay in sync with the
-snap's `snapcraft.yaml`, and some privileged interfaces cannot be connected
-without store assertions regardless.
+After a dangerous-mode install, emit `snap connect` commands for every
+interface the controller snap requires. This partially restores functionality
+but requires maintaining a hardcoded list of interfaces that must stay in sync
+with the snap's `snapcraft.yaml`, and some privileged interfaces cannot be
+connected without store assertions regardless.
 
 
 #### Command surface
 
 - `--agent-version`
-  Deprecated. Machine agent version is resolved automatically from
-simplestreams using the current `major.minor` track, selecting the newest
-available patch.
+  Deprecated for snap-based bootstrap paths. Machine agent version is resolved
+  automatically: when `--controller-snap-revision` or `--controller-snap-path`
+  is provided the version is read from the snap file; when
+  `--controller-snap-channel` is used the version is resolved via `snap info`;
+  otherwise the newest available patch in the current `major.minor` track is
+  selected from simplestreams.
+
 - `--build-agent`
-  Builds machine/unit `jujud` tools only. Has no effect on how the controller
-  snap is installed.
+  Builds machine/unit `jujud` tools from local source and uploads them to the
+  bootstrap instance. Has no effect on how the controller snap is sourced or
+  installed.
+
 - `--controller-snap-path`
-  Path to a locally built controller snap file. When provided, the client
-  uploads the snap to the bootstrap instance. If `--controller-snap-assert-path`
-  is not also provided, the snap is installed in dangerous mode.
+  Path to a locally built controller snap file (`.snap`). The snap is uploaded
+  to the bootstrap instance. If `--controller-snap-assert-path` is not also
+  provided, the snap is installed in dangerous mode (no signature verification,
+  no interface auto-connections — intended for development use only).
+
 - `--controller-snap-assert-path`
-  Path to the snap assertion file for the locally provided snap. When supplied
-  alongside `--controller-snap-path`, the snap is installed via `snap ack` +
-  `snap install`. Omitting this file is an explicit opt-in to dangerous mode.
+  Path to the snap assertion file (`.assert`) for the snap provided via
+  `--controller-snap-path`. When supplied, the snap is installed via
+  `snap ack` + `snap install` with full signature verification and interface
+  auto-connections. Omitting this flag is an explicit opt-in to dangerous mode.
+
 - `--controller-snap-channel`
-  Snap store channel to install the controller snap from (e.g. `4.0/edge`).
-  Used for the published-binaries path when no explicit revision is required.
-- `--controller-snap-revision`
-  Specific snap store revision to install. Use instead of (or alongside)
-  `--controller-snap-channel` when a precise revision is required rather than
-  the latest in a channel.
+  Snap store channel from which to install the controller snap
+  (e.g. `4.0/stable`, `4.0/edge`). Juju resolves the published version for
+  the channel at bootstrap time using `snap info` and uses it to fetch
+  compatible machine agent binaries from simplestreams. Defaults to
+  `<major.minor>/stable` if neither this flag nor
+  `--controller-snap-revision` is provided.
+
+- `--controller-snap-revision` 
+  Specific snap store revision to install (e.g. `34345`). When provided, Juju
+  downloads the snap from the store, reads its embedded version, and uploads it
+  to the bootstrap instance. The controller snap will not receive automatic store
+  updates; future upgrades must supply a new `--controller-snap-revision` or a
+  `--controller-snap-channel`. Cannot be combined with
+  `--controller-snap-channel`.
+
 - `--controller-charm-path`
   No changes.
+
 - `--controller-charm-channel`
   No changes.
 
