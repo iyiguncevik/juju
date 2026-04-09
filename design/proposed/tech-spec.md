@@ -1,22 +1,9 @@
 ## Abstract
 
-This document defines the technical implementation for the bootstrap flow of
-the controller snap path. It specifies the bootstrap-time contracts between:
-
-- juju client
-- cloud init
-- controller agent
-- charm
-
-For artifact selection, `--agent-version` is dropped in favour of snap channel
-semantics: the published-binaries path installs the latest revision in the
-`<major.minor>/stable` channel (with `--controller-snap-revision` for explicit
-pinning), and the local-build path accepts a user-provided snap via
-`--controller-snap-path`. If `--controller-snap-assert-path` is also provided
-the snap is installed normally; if omitted, the absence of an assertion is taken
-as an explicit opt-in to dangerous mode. In both paths, machine agent binaries
-are resolved from simplestreams using the current `major.minor` track,
-selecting the newest available patch.
+`--agent-version` is deprecated for snap-based bootstrap. The controller snap
+becomes the version anchor: the agent version is extracted from the snap file
+(for local or revision-pinned paths), or resolved via `snap info` (for channel
+paths), and used to fetch compatible machine agent binaries from simplestreams.
 
 ## Rationale
 
