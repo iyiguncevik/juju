@@ -1,9 +1,10 @@
 ## Abstract
 
 `--agent-version` is deprecated for snap-based bootstrap. The controller snap
-becomes the version anchor: the agent version is extracted from the snap file
-(for local or revision-pinned paths), or resolved via `snap info` (for channel
-paths), and used to fetch compatible machine agent binaries from simplestreams.
+becomes the version anchor during the bootstrap: the agent version is extracted
+from the snap file (for local or revision-pinned paths), or resolved via
+`snap info` (for channel paths), and used to fetch compatible machine agent
+binaries from simplestreams.
 
 ## Rationale
 
@@ -26,23 +27,14 @@ slower than needed, and more failure-prone.
 
 ## Scope
 
-This project handles only the bootstrap path for the first controller machine
-(`controller/0`) until control is handed to normal charm-managed operations.
-
-### In scope
-
-- Bootstrap-time responsibilities for controller snap acquisition, delivery,
-  install, and first-start readiness.
-- Bootstrap command/config/API contracts.
-- Controller-agent worker loading and data-access strategy for model manifolds.
-- Artifact metadata and distribution contracts needed by bootstrap.
+- Bootstrap flow from `juju bootstrap` invocation through first controller start.
 
 ### Out of scope
 
-- Build system design or implementation (`make`, linking strategy, build jobs).
-- Snap packaging and release pipeline design.
-- CI/CD job definitions.
-- Post-bootstrap lifecycle behavior.
+- Upgrade and scale-out flows after bootstrap (including storage of controller snap artifacts for future upgrades/scale out).
+- Build system design or implementation (linking strategy, build jobs, makefile targets, etc.).
+- CI/CD job definitions, e.g. how controller snap is built and published in the release pipeline.
+- Machine provisioning: The machine agent bootstrap contract is still relevant, but the provisioning flow itself is a non-goal for this work and can be designed/implemented separately.
 
 ## Technical Specification (Bootstrap Flow)
 
@@ -78,10 +70,9 @@ with snap as an artifact source.
 **Selected approach**: drop `--agent-version` for the snap path and align with
 snap semantics. A channel always resolves to the current latest revision for
 that track, so Juju installs the latest revision in `<major.minor>/stable` by
-default. Without `--agent-version`, the client queries simplestreams for the
-current `major.minor` track and selects the newest available patch for machine
-agents via `availableTools.Newest()`. This is already implemented and requires
-no new mechanism.
+default. Before fetching machine-agent binaries, the client resolves the exact
+published Juju version (`major.minor.patch`) for that channel from the Snap
+Store and constrains the simplestreams query to that exact version.
 
 The following alternatives were considered and rejected:
 
@@ -155,9 +146,9 @@ currently published in that channel.
 
 **Selected approach**: run `snap info` for the given channel on the client
 during bootstrap to resolve the published version without downloading the snap.
-The returned version string is used to constrain the simplestreams query for
-machine agent binaries, ensuring the machine agent version is consistent with
-the controller snap that will be installed.
+The returned `major.minor.patch` version is used to constrain the simplestreams
+query to that exact version, ensuring the machine agent version is consistent
+with the controller snap that will be installed.
 
 The following alternatives were considered and rejected:
 
@@ -179,7 +170,9 @@ In this path the user provides the controller snap file directly via
 `--controller-snap-path`. The snap file is available locally, so there is no
 need to download it from the store. The approach to discovering the agent
 version and handling the snap installation depends on whether a snap assertion
-file is also provided.
+file is also provided. The assertion file is store-issued metadata that verifies
+the snap file's integrity and is typically downloaded from the Snap Store
+together with the `.snap`.
 
 **Local snap with assert file**
 
@@ -212,11 +205,9 @@ in dangerous mode. The controller snap relies on several of these interfaces to
 manage machines and interact with the system. Without them the controller may
 start but fail at runtime when it attempts to use those capabilities.
 
-**Selected approach**: attempt to read the version from the local snap file
-metadata and use it to upload matching agent binaries if they are available.
-When no matching binaries exist locally for the exact version, fall back to the
-newest available patch in the `major.minor` track. This avoids a hard failure
-while keeping the behaviour as close as possible to the snap's actual version.
+**Selected approach**: read the version from the local snap file metadata and
+require matching machine agent binaries for that exact `major.minor.patch`
+version. If an exact match is unavailable, bootstrap hard-fails.
 
 After a dangerous-mode install, emit `snap connect` commands for every
 interface the controller snap requires. This partially restores functionality
@@ -231,14 +222,16 @@ connected without store assertions regardless.
   Deprecated for snap-based bootstrap paths. Machine agent version is resolved
   automatically: when `--controller-snap-revision` or `--controller-snap-path`
   is provided the version is read from the snap file; when
-  `--controller-snap-channel` is used the version is resolved via `snap info`;
-  otherwise the newest available patch in the current `major.minor` track is
-  selected from simplestreams.
+  `--controller-snap-channel` is used the exact published version is resolved
+  via `snap info`; otherwise Juju uses the default `<major.minor>/stable`
+  channel, resolves its exact published version, and queries simplestreams for
+  that exact version.
 
 - `--build-agent`
-  Builds machine/unit `jujud` tools from local source and uploads them to the
-  bootstrap instance. Has no effect on how the controller snap is sourced or
-  installed.
+  Builds and uploads a local compatible controller-snap/agent-tools pair for
+  bootstrap. Bootstrap requires an exact version match between the controller
+  snap and machine agent binaries; if no exact matching agent binaries are
+  available, bootstrap fails.
 
 - `--controller-snap-path`
   Path to a locally built controller snap file (`.snap`). The snap is uploaded
@@ -248,7 +241,8 @@ connected without store assertions regardless.
 
 - `--controller-snap-assert-path`
   Path to the snap assertion file (`.assert`) for the snap provided via
-  `--controller-snap-path`. When supplied, the snap is installed via
+  `--controller-snap-path`. Cannot be provided unless
+  `--controller-snap-path` is also set. When supplied, the snap is installed via
   `snap ack` + `snap install` with full signature verification and interface
   auto-connections. Omitting this flag is an explicit opt-in to dangerous mode.
 
