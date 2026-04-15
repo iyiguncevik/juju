@@ -387,7 +387,7 @@ Those run in the machine engine and can also spawn additional child workers,
 which is why observed runtime worker counts can be much higher than this list.
 
 - `commonManifolds`:
-  - `agent` → `3. Shared worker`
+  - `agent` → `2. Machine-agent-only worker`
   - `clock` → `3. Shared worker`
   - `api-config-watcher` → `3. Shared worker`
   - `api-caller` → `3. Shared worker`
