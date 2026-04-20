@@ -66,7 +66,7 @@ func (s *stateSuite) insertBlockDevice(
 INSERT INTO block_device (
 	uuid, machine_uuid, name, filesystem_label,
 	host_filesystem_uuid, hardware_id, wwn, bus_address, serial_id,
-	mount_point, filesystem_type, size_mib, in_use, provenance)
+	mount_point, filesystem_type, size_mib, in_use, provenance_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, blockDeviceUUID, machineUUID, bd.DeviceName, bd.FilesystemLabel,
 		bd.FilesystemUUID, bd.HardwareId, bd.WWN, bd.BusAddress, bd.SerialId,

@@ -78,12 +78,12 @@ CREATE TABLE block_device_new (
     filesystem_label TEXT,
     host_filesystem_uuid TEXT,
     filesystem_type TEXT,
-    provenance INT NOT NULL DEFAULT 0,
+    provenance_id INT NOT NULL DEFAULT 0,
     CONSTRAINT fk_block_device_machine
     FOREIGN KEY (machine_uuid)
     REFERENCES machine (uuid),
     CONSTRAINT fk_block_device_provenance
-    FOREIGN KEY (provenance)
+    FOREIGN KEY (provenance_id)
     REFERENCES block_device_provenance (id)
 );
 
@@ -102,7 +102,7 @@ SELECT
     filesystem_label,
     host_filesystem_uuid,
     filesystem_type,
-    0 AS provenance
+    0 AS provenance_id
 FROM block_device;
 
 -- ============================================================================
@@ -257,7 +257,7 @@ WHEN
 	(NEW.filesystem_label != OLD.filesystem_label OR (NEW.filesystem_label IS NOT NULL AND OLD.filesystem_label IS NULL) OR (NEW.filesystem_label IS NULL AND OLD.filesystem_label IS NOT NULL)) OR
 	(NEW.host_filesystem_uuid != OLD.host_filesystem_uuid OR (NEW.host_filesystem_uuid IS NOT NULL AND OLD.host_filesystem_uuid IS NULL) OR (NEW.host_filesystem_uuid IS NULL AND OLD.host_filesystem_uuid IS NOT NULL)) OR
 	(NEW.filesystem_type != OLD.filesystem_type OR (NEW.filesystem_type IS NOT NULL AND OLD.filesystem_type IS NULL) OR (NEW.filesystem_type IS NULL AND OLD.filesystem_type IS NOT NULL)) OR
-	(NEW.provenance != OLD.provenance OR (NEW.provenance IS NOT NULL AND OLD.provenance IS NULL) OR (NEW.provenance IS NULL AND OLD.provenance IS NOT NULL)) 
+	(NEW.provenance_id != OLD.provenance_id OR (NEW.provenance_id IS NOT NULL AND OLD.provenance_id IS NULL) OR (NEW.provenance_id IS NULL AND OLD.provenance_id IS NOT NULL))
 BEGIN
     INSERT INTO change_log (edit_type_id, namespace_id, changed, created_at)
     VALUES (2, 10002, OLD.machine_uuid, DATETIME('now', 'utc'));

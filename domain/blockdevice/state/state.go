@@ -100,7 +100,7 @@ WHERE  block_device_uuid = $entityUUID.uuid
 		InUse:           blockDevice.InUse,
 		MountPoint:      blockDevice.MountPoint,
 		SerialId:        blockDevice.SerialId,
-		Provenance:      coreblockdevice.Provenance(blockDevice.Provenance),
+		Provenance:      coreblockdevice.Provenance(blockDevice.ProvenanceID),
 	}
 	for _, v := range devLinks {
 		retVal.DeviceLinks = append(retVal.DeviceLinks, v.Name)
@@ -197,7 +197,7 @@ WHERE  machine_uuid = $entityUUID.uuid
 			InUse:           bd.InUse,
 			MountPoint:      bd.MountPoint,
 			SerialId:        bd.SerialId,
-			Provenance:      coreblockdevice.Provenance(bd.Provenance),
+			Provenance:      coreblockdevice.Provenance(bd.ProvenanceID),
 		}
 	}
 	for _, dl := range devLinks {
@@ -448,7 +448,7 @@ SET    name = $blockDevice.name,
        filesystem_label = $blockDevice.filesystem_label,
        host_filesystem_uuid = $blockDevice.host_filesystem_uuid,
        filesystem_type = $blockDevice.filesystem_type,
-       provenance = $blockDevice.provenance
+       provenance_id = $blockDevice.provenance_id
 WHERE  uuid = $blockDevice.uuid
 `, blockDevice{})
 	if err != nil {
@@ -495,7 +495,7 @@ WHERE  uuid = $blockDevice.uuid
 			FilesystemType:     bd.FilesystemType,
 			InUse:              bd.InUse,
 			MountPoint:         bd.MountPoint,
-			Provenance:         int(bd.Provenance),
+			ProvenanceID:       int(bd.Provenance),
 		}
 		if bd.DeviceName != "" {
 			val.Name = sql.Null[string]{
@@ -577,7 +577,7 @@ VALUES ($deviceLink.*)
 			SizeMiB:            bd.SizeMiB,
 			FilesystemType:     bd.FilesystemType,
 			InUse:              bd.InUse,
-			Provenance:         int(bd.Provenance),
+			ProvenanceID:       int(bd.Provenance),
 		}
 		if bd.DeviceName != "" {
 			inputBlockDevice.Name = sql.Null[string]{
@@ -703,7 +703,7 @@ FROM   machine
 			InUse:           bd.InUse,
 			MountPoint:      bd.MountPoint,
 			SerialId:        bd.SerialId,
-			Provenance:      coreblockdevice.Provenance(bd.Provenance),
+			Provenance:      coreblockdevice.Provenance(bd.ProvenanceID),
 		})
 	}
 
