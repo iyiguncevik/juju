@@ -495,12 +495,8 @@ func (w *Worker) handleAddS3Credentials(resp http.ResponseWriter, req *http.Requ
 func (w *Worker) handleRemoveS3Credentials(resp http.ResponseWriter, req *http.Request) {
 	// We currently don't allow you to move to another s3 provider. This will
 	// be fixed in future requests.
-	resp.Header().Set("Content-Type", "application/json")
-	resp.WriteHeader(http.StatusNotImplemented)
-	_, err := resp.Write([]byte(`{"error": "removing s3 credentials is not supported at this time"}`))
-	if err != nil {
-		w.logger.Warningf(req.Context(), "error writing HTTP response: %v", err)
-	}
+	w.writeErrorResponse(req.Context(), resp, http.StatusNotImplemented,
+		internalerrors.New("removing s3 credentials is not supported at this time"))
 }
 
 func (w *Worker) handleJSONPost(fn func(http.ResponseWriter, *http.Request)) http.Handler {
