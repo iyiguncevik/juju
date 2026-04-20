@@ -493,6 +493,9 @@ func (s *WatchableDrainingService) TransitionBackendToS3(ctx context.Context, cr
 		return errors.Errorf("validating S3 credentials: %w", err)
 	}
 
+	// TODO (stickupkid): Subsequent changes will store the S3 credentials. For
+	// now do nothing.
+
 	return nil
 }
 
