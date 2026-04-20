@@ -124,7 +124,10 @@ CREATE TABLE block_device_link_device_new (
 );
 
 INSERT INTO block_device_link_device_new
-SELECT block_device_uuid, machine_uuid, name
+SELECT
+    block_device_uuid,
+    machine_uuid,
+    name
 FROM block_device_link_device;
 
 DROP INDEX idx_block_device_link_device;
