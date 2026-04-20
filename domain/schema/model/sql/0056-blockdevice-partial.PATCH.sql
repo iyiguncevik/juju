@@ -1,4 +1,4 @@
--- This migration adds a provenance column to block_device.
+-- This PATCH adds a provenance column to block_device.
 --
 -- SQLite does not support ALTER TABLE DROP CONSTRAINT, so we must use the
 -- create-copy-drop-rename pattern for block_device AND all child tables
@@ -7,6 +7,13 @@
 -- toggled mid-transaction.
 --
 -- See https://www.sqlite.org/lang_altertable.html Section 7.
+--
+-- To merge this PATCH file, just add the provenance column to block_device with
+-- the appropriate FK constraint, with a default value of 0 (provider), and then
+-- update the triggers on block_device to log changes to the provenance column.
+--
+-- ALL this hilarity is about adding a single column with a FK to a lookup
+-- table.
 
 -- ============================================================================
 -- Step 1: Create the new lookup table.
