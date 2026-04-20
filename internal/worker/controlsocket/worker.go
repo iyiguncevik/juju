@@ -295,7 +295,7 @@ func (w *Worker) handleAddMetricsUser(resp http.ResponseWriter, req *http.Reques
 				internalerrors.Errorf("request body must not exceed %d bytes", maxPayloadBytes))
 		default:
 			w.writeErrorResponse(ctx, resp, http.StatusBadRequest,
-				internalerrors.Errorf("request body is not valid JSON: %v", err))
+				internalerrors.Errorf("request body is not valid JSON: %w", err))
 		}
 		return
 	}
@@ -341,7 +341,7 @@ func (w *Worker) addMetricsUser(ctx context.Context, username string, password a
 		user, err := w.accessService.GetUserByAuth(ctx, validatedName, password)
 		if err != nil {
 			return http.StatusInternalServerError,
-				fmt.Errorf("retrieving existing user %q: %v", username, err)
+				internalerrors.Errorf("retrieving existing user %q: %w", username, err)
 		}
 
 		// We want this operation to be idempotent, but at the same time, this
@@ -360,7 +360,7 @@ func (w *Worker) addMetricsUser(ctx context.Context, username string, password a
 		accessLevel, err := w.accessService.ReadUserAccessLevelForTarget(ctx, validatedName, controllerModelID)
 		if err != nil {
 			return http.StatusInternalServerError,
-				fmt.Errorf("retrieving existing user %q: %v", username, err)
+				internalerrors.Errorf("retrieving existing user %q: %w", username, err)
 		} else if accessLevel != permission.ReadAccess {
 			return http.StatusNotFound, fmt.Errorf(
 				"unexpected permission for user %q, expected %q, got %q",
@@ -433,7 +433,7 @@ func (w *Worker) handleSetCharmTracingConfig(resp http.ResponseWriter, req *http
 				internalerrors.Errorf("request body must not exceed %d bytes", maxPayloadBytes))
 		default:
 			w.writeErrorResponse(ctx, resp, http.StatusBadRequest,
-				internalerrors.Errorf("request body is not valid JSON: %v", err))
+				internalerrors.Errorf("request body is not valid JSON: %w", err))
 		}
 		return
 	}
@@ -472,7 +472,7 @@ func (w *Worker) handleAddS3Credentials(resp http.ResponseWriter, req *http.Requ
 				internalerrors.Errorf("request body must not exceed %d bytes", maxPayloadBytes))
 		default:
 			w.writeErrorResponse(ctx, resp, http.StatusBadRequest,
-				internalerrors.Errorf("request body is not valid JSON: %v", err))
+				internalerrors.Errorf("request body is not valid JSON: %w", err))
 		}
 		return
 	}
@@ -482,7 +482,7 @@ func (w *Worker) handleAddS3Credentials(resp http.ResponseWriter, req *http.Requ
 		AccessKey: parsedBody.AccessKey,
 		SecretKey: parsedBody.SecretKey,
 	}); internalerrors.Is(err, coreerrors.NotValid) {
-		w.writeErrorResponse(ctx, resp, http.StatusBadRequest, internalerrors.Errorf("invalid S3 credentials: %v", err))
+		w.writeErrorResponse(ctx, resp, http.StatusBadRequest, internalerrors.Errorf("invalid S3 credentials: %w", err))
 		return
 	} else if err != nil {
 		w.writeErrorResponse(ctx, resp, http.StatusInternalServerError, internalerrors.Errorf("saving S3 credentials: %w", err))
