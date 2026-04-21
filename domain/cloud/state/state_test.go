@@ -275,6 +275,14 @@ func (s *stateSuite) TestCreateCloudUpdateExisting(c *tc.C) {
 	c.Assert(originalUUID, tc.Equals, cloudUUID)
 }
 
+func (s *stateSuite) TestCreateCloudWithExistingNameNewUUID(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory())
+	s.assertInsertCloud(c, st, testCloud)
+
+	err := st.CreateCloud(c.Context(), usertesting.GenNewName(c, "admin"), uuid.MustNewUUID().String(), testCloud)
+	c.Assert(err, tc.ErrorIs, clouderrors.AlreadyExists)
+}
+
 func (s *stateSuite) TestCreateCloudInvalidType(c *tc.C) {
 	cld := testCloud
 	cld.Type = "mycloud"

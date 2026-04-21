@@ -686,7 +686,9 @@ func (api *CloudAPI) AddCloud(ctx context.Context, cloudArgs params.AddCloudArgs
 	}
 
 	err = api.cloudService.CreateCloud(ctx, user.NameFromTag(api.apiUser), aCloud)
-	if err != nil {
+	if errors.Is(err, clouderrors.AlreadyExists) {
+		return internalerrors.New(fmt.Sprintf("cloud %q already exists", cloudArgs.Name)).Add(coreerrors.AlreadyExists)
+	} else if err != nil {
 		return errors.Annotatef(err, "creating cloud %q", cloudArgs.Name)
 	}
 	return nil

@@ -414,6 +414,8 @@ ON CONFLICT(uuid) DO UPDATE SET name=excluded.name,
 	err = tx.Query(ctx, insertCloudStmt, cloudFromDB).Run()
 	if database.IsErrConstraintCheck(err) {
 		return errors.Errorf("%w cloud name cannot be empty", coreerrors.NotValid).Add(err)
+	} else if database.IsErrConstraintUnique(err) {
+		return errors.Errorf("cloud %q %w", cloud.Name, clouderrors.AlreadyExists).Add(err)
 	} else if err != nil {
 		return errors.Capture(err)
 	}
