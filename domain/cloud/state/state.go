@@ -391,9 +391,30 @@ func updateCloud(ctx context.Context, tx *sqlair.TX, cloudUUID string, cloud clo
 }
 
 func upsertCloud(ctx context.Context, tx *sqlair.TX, cloudUUID string, cloud cloud.Cloud) error {
+	if cloud.Name == "" {
+		return errors.Errorf("%w cloud name cannot be empty", coreerrors.NotValid)
+	}
+
 	cloudFromDB, err := dbCloudFromCloud(ctx, tx, cloudUUID, cloud)
 	if err != nil {
 		return errors.Capture(err)
+	}
+
+	// Check for a name conflict before upserting.
+	selectByNameStmt, err := sqlair.Prepare(`
+SELECT &dbCloud.uuid
+FROM   cloud
+WHERE  name = $dbCloud.name`, dbCloud{})
+	if err != nil {
+		return errors.Capture(err)
+	}
+
+	var nameCheck dbCloud
+	err = tx.Query(ctx, selectByNameStmt, cloudFromDB).Get(&nameCheck)
+	if err != nil && !errors.Is(err, sqlair.ErrNoRows) {
+		return errors.Capture(err)
+	} else if err == nil && nameCheck.UUID != cloudUUID {
+		return errors.Errorf("cloud %q %w", cloud.Name, clouderrors.AlreadyExists)
 	}
 
 	insertCloudStmt, err := sqlair.Prepare(`
@@ -411,15 +432,7 @@ ON CONFLICT(uuid) DO UPDATE SET name=excluded.name,
 		return errors.Capture(err)
 	}
 
-	err = tx.Query(ctx, insertCloudStmt, cloudFromDB).Run()
-	if database.IsErrConstraintCheck(err) {
-		return errors.Errorf("%w cloud name cannot be empty", coreerrors.NotValid).Add(err)
-	} else if database.IsErrConstraintUnique(err) {
-		return errors.Errorf("cloud %q %w", cloud.Name, clouderrors.AlreadyExists).Add(err)
-	} else if err != nil {
-		return errors.Capture(err)
-	}
-	return nil
+	return errors.Capture(tx.Query(ctx, insertCloudStmt, cloudFromDB).Run())
 }
 
 // loadAuthTypes reads the cloud auth type values and ids
