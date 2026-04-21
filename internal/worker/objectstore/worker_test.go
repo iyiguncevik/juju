@@ -231,11 +231,6 @@ func (s *workerSuite) TestFlushWorkersCancelledContext(c *tc.C) {
 
 	s.ensureStartup(c)
 
-	// Cancel the context before calling FlushWorkers. The worker loop
-	// is blocked processing the startup state, and the send on the
-	// flushWorkers channel will race with the cancelled context.
-	// To guarantee the context branch wins, we don't use ensureStartup's
-	// guarantee of the loop being ready — instead we cancel first.
 	ctx, cancel := context.WithCancel(c.Context())
 	cancel()
 

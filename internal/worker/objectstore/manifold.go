@@ -69,8 +69,8 @@ type ControllerConfigService interface {
 // the manifold.
 type GetControllerConfigServiceFunc func(getter dependency.Getter, name string) (ControllerConfigService, error)
 
-// ObjectStoreService is the interface that the worker uses to get the
-// controller configuration.
+// ObjectStoreService is the interface that the worker uses to get the active
+// object store backend.
 type ObjectStoreService interface {
 	// GetActiveObjectStoreBackend returns the active object store backend
 	// information.
