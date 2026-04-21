@@ -391,10 +391,6 @@ func updateCloud(ctx context.Context, tx *sqlair.TX, cloudUUID string, cloud clo
 }
 
 func upsertCloud(ctx context.Context, tx *sqlair.TX, cloudUUID string, cloud cloud.Cloud) error {
-	if cloud.Name == "" {
-		return errors.Errorf("%w cloud name cannot be empty", coreerrors.NotValid)
-	}
-
 	cloudFromDB, err := dbCloudFromCloud(ctx, tx, cloudUUID, cloud)
 	if err != nil {
 		return errors.Capture(err)

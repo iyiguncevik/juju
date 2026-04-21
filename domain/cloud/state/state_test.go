@@ -17,7 +17,6 @@ import (
 	"github.com/juju/juju/cloud"
 	corecloud "github.com/juju/juju/core/cloud"
 	cloudtesting "github.com/juju/juju/core/cloud/testing"
-	coreerrors "github.com/juju/juju/core/errors"
 	coremodel "github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/user"
@@ -290,15 +289,6 @@ func (s *stateSuite) TestCreateCloudInvalidType(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory())
 	err := st.CreateCloud(c.Context(), usertesting.GenNewName(c, "admin"), uuid.MustNewUUID().String(), cld)
 	c.Assert(err, tc.ErrorMatches, `.* cloud type "mycloud" not valid`)
-}
-
-func (s *stateSuite) TestCloudWithEmptyNameFails(c *tc.C) {
-	cld := testCloud
-	cld.Name = ""
-
-	st := NewState(s.TxnRunnerFactory())
-	err := st.CreateCloud(c.Context(), usertesting.GenNewName(c, "admin"), uuid.MustNewUUID().String(), cld)
-	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
 }
 
 func (s *stateSuite) TestCreateCloudInvalidAuthType(c *tc.C) {
