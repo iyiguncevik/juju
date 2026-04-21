@@ -355,7 +355,7 @@ func (s *offerServiceSuite) TestCreateOfferValidateApplicationFails(c *tc.C) {
 	err := s.service(c).CreateOffer(c.Context(), args)
 
 	// Assert
-	c.Assert(err, tc.ErrorMatches, "creating offer: application is dead")
+	c.Assert(err, tc.ErrorMatches, "creating offer .*: application is dead")
 }
 
 // TestCreateOfferAccessAndDeleteFail tests that when both CreateOfferAccess
