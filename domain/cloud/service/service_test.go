@@ -48,6 +48,13 @@ func (s *serviceSuite) TestCreateCloudFail(c *tc.C) {
 	c.Assert(err, tc.ErrorMatches, `creating cloud "fluffy": boom`)
 }
 
+func (s *serviceSuite) TestCreateCloudEmptyName(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	err := NewWatchableService(s.state, s.watcherFactory).CreateCloud(c.Context(), usertesting.GenNewName(c, "owner-name"), cloud.Cloud{})
+	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
+}
+
 func (s *serviceSuite) TestUpdateCloudSuccess(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
@@ -70,6 +77,13 @@ func (s *serviceSuite) TestUpdateCloudError(c *tc.C) {
 
 	err := NewWatchableService(s.state, s.watcherFactory).UpdateCloud(c.Context(), cloud)
 	c.Assert(err, tc.ErrorMatches, `updating cloud "fluffy": boom`)
+}
+
+func (s *serviceSuite) TestUpdateCloudEmptyName(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	err := NewWatchableService(s.state, s.watcherFactory).UpdateCloud(c.Context(), cloud.Cloud{})
+	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
 }
 
 func (s *serviceSuite) TestDeleteCloudSuccess(c *tc.C) {

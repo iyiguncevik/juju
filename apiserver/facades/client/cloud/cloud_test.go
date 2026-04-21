@@ -14,11 +14,13 @@ import (
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
+	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/apiserver/facades/client/cloud"
 	"github.com/juju/juju/apiserver/facades/client/cloud/mocks"
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	jujucloud "github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/credential"
+	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
@@ -485,6 +487,31 @@ func (s *cloudSuite) TestAddCloudNoAdminPerms(c *tc.C) {
 		}}
 	err := s.api.AddCloud(c.Context(), paramsCloud)
 	c.Assert(err, tc.ErrorMatches, "permission denied")
+}
+
+func (s *cloudSuite) TestAddCloudAlreadyExists(c *tc.C) {
+	adminTag := names.NewUserTag("admin")
+	defer s.setup(c, adminTag).Finish()
+
+	cloud := jujucloud.Cloud{
+		Name: "newcloudname",
+		Type: "maas",
+	}
+	s.cloudService.EXPECT().Cloud(gomock.Any(), "dummy").Return(&cloud, nil)
+	newCloud := jujucloud.Cloud{
+		Name:      "newcloudname",
+		Type:      "maas",
+		AuthTypes: []jujucloud.AuthType{jujucloud.EmptyAuthType, jujucloud.UserPassAuthType},
+		Endpoint:  "fake-endpoint",
+		Regions:   []jujucloud.Region{{Name: "nether", Endpoint: "nether-endpoint"}},
+	}
+	s.cloudService.EXPECT().CreateCloud(gomock.Any(), user.NameFromTag(adminTag), newCloud).
+		Return(clouderrors.AlreadyExists)
+
+	err := s.api.AddCloud(c.Context(), createAddCloudParam("maas"))
+	c.Assert(err, tc.ErrorIs, coreerrors.AlreadyExists)
+	serverErr := apiservererrors.ServerError(err)
+	c.Check(serverErr.Code, tc.Equals, params.CodeAlreadyExists)
 }
 
 func (s *cloudSuite) TestUpdateCloud(c *tc.C) {
