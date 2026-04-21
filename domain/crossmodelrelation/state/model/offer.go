@@ -288,12 +288,12 @@ func (st *State) getFilteredOfferDetails(ctx context.Context, tx *sqlair.TX, inp
 	stmt, err := st.Prepare(`
 SELECT &offerDetail.*
 FROM   v_offer_detail
-WHERE  offer_name = $offerFilter.offer_name
-OR     application_name LIKE $offerFilter.application_name
-OR     application_description LIKE $offerFilter.application_description
-OR     endpoint_name = $offerFilter.endpoint_name
-OR     endpoint_role = $offerFilter.endpoint_role
-OR     endpoint_interface = $offerFilter.endpoint_interface
+WHERE  (offer_name LIKE $offerFilter.offer_name OR $offerFilter.offer_name = '')
+AND    (application_name = $offerFilter.application_name OR $offerFilter.application_name = '')
+AND    (application_description LIKE $offerFilter.application_description OR $offerFilter.application_description = '')
+AND    (endpoint_name = $offerFilter.endpoint_name OR $offerFilter.endpoint_name = '')
+AND    (endpoint_role = $offerFilter.endpoint_role OR $offerFilter.endpoint_role = '')
+AND    (endpoint_interface = $offerFilter.endpoint_interface OR $offerFilter.endpoint_interface = '')
 `, offerDetail{}, offerFilter{})
 	if err != nil {
 		return nil, errors.Errorf("preparing filtered offer detail query: %w", err)
@@ -325,24 +325,23 @@ OR     endpoint_interface = $offerFilter.endpoint_interface
 // together to find offers. Thus, the input can be split into multiple
 // output.
 //
-// Application name and description filter values should be contained with
-// the actual result. Setup their values to use the LIKE operator by adding
-// an `%` before and after the word if provided.
+// ApplicatioName is matched exactly, while ApplicationDescription
+// and OfferName are matched with a "contains" match.
 func encodeOfferFilter(in crossmodelrelation.OfferFilter) ([]offerFilter, error) {
 	result := make([]offerFilter, 0)
 	if !in.EmptyModuloEndpoints() {
 		var (
-			applicationName, applicationDescription string
+			offerName, applicationDescription string
 		)
-		if in.ApplicationName != "" {
-			applicationName = fmt.Sprintf("%%%s%%", in.ApplicationName)
-		}
 		if in.ApplicationDescription != "" {
 			applicationDescription = fmt.Sprintf("%%%s%%", in.ApplicationDescription)
 		}
+		if in.OfferName != "" {
+			offerName = fmt.Sprintf("%%%s%%", in.OfferName)
+		}
 		result = append(result, offerFilter{
-			OfferName:              in.OfferName,
-			ApplicationName:        applicationName,
+			OfferName:              offerName,
+			ApplicationName:        in.ApplicationName,
 			ApplicationDescription: applicationDescription,
 		})
 	}
