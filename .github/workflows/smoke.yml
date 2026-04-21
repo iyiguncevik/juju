@@ -89,8 +89,6 @@ jobs:
     runs-on: [self-hosted, linux, x64, aws, quad-xlarge]
     timeout-minutes: 60
     if: github.event.pull_request.draft == false
-    strategy:
-      fail-fast: false
     steps:
 
       - name: Checkout
