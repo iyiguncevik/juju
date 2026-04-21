@@ -73,9 +73,6 @@ jobs:
           export MODEL_ARCH=$(go env GOARCH)
           export BOOTSTRAP_ADDITIONAL_ARGS="--model-default enable-os-upgrade=false"
 
-          # Skip destroy to keep the environment up.
-          export SKIP_DESTROY=true
-
           ./main.sh -v -s 'test_build' smoke
 
       - name: Smoke test (MicroK8s)
@@ -84,9 +81,6 @@ jobs:
         run: |
           cd tests
           export MODEL_ARCH=$(go env GOARCH)
-
-          # Skip destroy to keep the environment up.
-          export SKIP_DESTROY=true
 
           sg snap_microk8s './main.sh -c microk8s -v smoke_k8s'
 
@@ -129,9 +123,6 @@ jobs:
           cd tests
           export MODEL_ARCH=$(go env GOARCH)
           export BOOTSTRAP_ADDITIONAL_ARGS="--model-default enable-os-upgrade=false --model-default logging-config='<root>=INFO;juju.worker.asynccharmdownloader=TRACE'"
-
-          # Skip destroy to keep the environment up.
-          export SKIP_DESTROY=true
 
           # Skip these tests for now, as they rely on cmrs
           ./main.sh -v -s 'test_cmr_bundles_export_overlay' deploy
