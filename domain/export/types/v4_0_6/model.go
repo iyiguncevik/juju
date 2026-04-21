@@ -264,7 +264,7 @@ type BlockDevice struct {
 	FilesystemLabel    *string `db:"filesystem_label" json:"filesystem_label" yaml:"filesystem_label"`
 	HostFilesystemUUID *string `db:"host_filesystem_uuid" json:"host_filesystem_uuid" yaml:"host_filesystem_uuid"`
 	FilesystemType     *string `db:"filesystem_type" json:"filesystem_type" yaml:"filesystem_type"`
-	Provenance         int64   `db:"provenance" json:"provenance" yaml:"provenance"`
+	ProvenanceID       int64   `db:"provenance_id" json:"provenance_id" yaml:"provenance_id"`
 }
 
 type BlockDeviceLinkDevice struct {
