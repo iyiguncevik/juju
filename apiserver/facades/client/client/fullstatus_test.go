@@ -479,7 +479,7 @@ func (s *fullStatusSuite) TestFullStatusFilteredByApplicationName(c *tc.C) {
 			Units: map[coreunit.Name]service.Unit{
 				"mysql/0": {
 					ApplicationName: "mysql",
-					MachineName:     ptrMachineName("1"),
+					MachineName:     new(machine.Name("1")),
 					AgentStatus: status.StatusInfo{
 						Status: status.Idle,
 					},
@@ -506,7 +506,7 @@ func (s *fullStatusSuite) TestFullStatusFilteredByApplicationName(c *tc.C) {
 			Units: map[coreunit.Name]service.Unit{
 				"wordpress/0": {
 					ApplicationName: "wordpress",
-					MachineName:     ptrMachineName("2"),
+					MachineName:     new(machine.Name("2")),
 					AgentStatus: status.StatusInfo{
 						Status: status.Idle,
 					},
@@ -580,10 +580,6 @@ func (s *fullStatusSuite) client(isControllerModel bool) *Client {
 		statusService:             s.statusService,
 		controllerConfigService:   s.controllerConfigService,
 	}
-}
-
-func ptrMachineName(name machine.Name) *machine.Name {
-	return &name
 }
 
 func (s *fullStatusSuite) setupMocks(c *tc.C) *gomock.Controller {

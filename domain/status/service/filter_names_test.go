@@ -23,11 +23,11 @@ func (s *filterNamesSuite) TestMatchStatusNamesApplicationIncludesUnitsAndMachin
 	units := map[coreunit.Name]Unit{
 		"mysql/0": {
 			ApplicationName: "mysql",
-			MachineName:     ptrMachineName("1"),
+			MachineName:     new(coremachine.Name("1")),
 		},
 		"wordpress/0": {
 			ApplicationName: "wordpress",
-			MachineName:     ptrMachineName("2"),
+			MachineName:     new(coremachine.Name("2")),
 		},
 	}
 	applications := map[string]Application{
@@ -58,13 +58,13 @@ func (s *filterNamesSuite) TestMatchStatusNamesPrincipalUnitIncludesSubordinate(
 	units := map[coreunit.Name]Unit{
 		"mysql/0": {
 			ApplicationName:  "mysql",
-			MachineName:      ptrMachineName("1"),
+			MachineName:      new(coremachine.Name("1")),
 			SubordinateNames: []coreunit.Name{"logging/0"},
 		},
 		"logging/0": {
 			ApplicationName: "logging",
 			Subordinate:     true,
-			PrincipalName:   ptrUnitName("mysql/0"),
+			PrincipalName:   new(coreunit.Name("mysql/0")),
 		},
 	}
 	applications := map[string]Application{
@@ -94,13 +94,13 @@ func (s *filterNamesSuite) TestMatchStatusNamesSubordinateIncludesPrincipal(c *t
 	units := map[coreunit.Name]Unit{
 		"mysql/0": {
 			ApplicationName:  "mysql",
-			MachineName:      ptrMachineName("1"),
+			MachineName:      new(coremachine.Name("1")),
 			SubordinateNames: []coreunit.Name{"logging/0"},
 		},
 		"logging/0": {
 			ApplicationName: "logging",
 			Subordinate:     true,
-			PrincipalName:   ptrUnitName("mysql/0"),
+			PrincipalName:   new(coreunit.Name("mysql/0")),
 		},
 	}
 	applications := map[string]Application{
@@ -130,11 +130,11 @@ func (s *filterNamesSuite) TestMatchStatusNamesMachineIncludesHostedUnitsAndCont
 	units := map[coreunit.Name]Unit{
 		"mysql/0": {
 			ApplicationName: "mysql",
-			MachineName:     ptrMachineName("0"),
+			MachineName:     new(coremachine.Name("0")),
 		},
 		"wordpress/0": {
 			ApplicationName: "wordpress",
-			MachineName:     ptrMachineName("0/lxd/0"),
+			MachineName:     new(coremachine.Name("0/lxd/0")),
 		},
 	}
 	applications := map[string]Application{
@@ -160,14 +160,6 @@ func (s *filterNamesSuite) TestMatchStatusNamesMachineIncludesHostedUnitsAndCont
 	c.Check(sortedAppNames(result), tc.DeepEquals, []string{"mysql", "wordpress"})
 	c.Check(sortedUnitNames(result), tc.DeepEquals, []string{"mysql/0", "wordpress/0"})
 	c.Check(sortedMachineNames(result), tc.DeepEquals, []string{"0", "0/lxd/0"})
-}
-
-func ptrMachineName(name coremachine.Name) *coremachine.Name {
-	return &name
-}
-
-func ptrUnitName(name coreunit.Name) *coreunit.Name {
-	return &name
 }
 
 func sortedAppNames(result NameMatchResult) []string {
