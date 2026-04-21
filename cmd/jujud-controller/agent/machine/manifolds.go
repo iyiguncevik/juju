@@ -787,6 +787,7 @@ func commonManifolds(config ManifoldsConfig) dependency.Manifolds {
 			NewObjectStoreWorker:       internalobjectstore.ObjectStoreFactory,
 			GetControllerConfigService: objectstore.GetControllerConfigService,
 			GetMetadataService:         objectstore.GetMetadataService,
+			GetObjectStoreService:      objectstore.GetObjectStoreService,
 			IsBootstrapController:      internalbootstrap.IsBootstrapController,
 		})),
 
