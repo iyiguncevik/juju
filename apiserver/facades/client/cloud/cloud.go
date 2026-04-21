@@ -5,6 +5,7 @@ package cloud
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
@@ -16,6 +17,7 @@ import (
 	"github.com/juju/juju/apiserver/facade"
 	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/credential"
+	coreerrors "github.com/juju/juju/core/errors"
 	corelogger "github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/user"
@@ -563,6 +565,11 @@ func (api *CloudAPI) RevokeCredentialsCheckModels(ctx context.Context, args para
 		}
 
 		if err = api.credentialService.CheckAndRevokeCredential(ctx, credential.KeyFromTag(tag), arg.Force); err != nil {
+			if errors.Is(err, credentialerrors.NotFound) {
+				err = internalerrors.New(
+					fmt.Sprintf("credential %s not found", tag.String()),
+				).Add(coreerrors.NotFound)
+			}
 			results.Results[i].Error = apiservererrors.ServerError(err)
 		}
 	}

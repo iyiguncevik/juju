@@ -935,6 +935,27 @@ func (s *cloudSuite) TestRevokeCredentials(c *tc.C) {
 	c.Assert(results.Results[2].Error, tc.IsNil)
 }
 
+func (s *cloudSuite) TestRevokeCredentialsNotFound(c *tc.C) {
+	bruceTag := names.NewUserTag("bruce")
+	defer s.setup(c, bruceTag).Finish()
+
+	_, tag := cloudCredentialTag(credParams{name: "three", owner: "bruce", cloudName: "meep", authType: jujucloud.EmptyAuthType,
+		attrs: map[string]string{}})
+
+	s.credService.EXPECT().CheckAndRevokeCredential(gomock.Any(), credential.KeyFromTag(tag), false).Return(credentialerrors.NotFound)
+
+	results, err := s.api.RevokeCredentialsCheckModels(c.Context(), params.RevokeCredentialArgs{
+		Credentials: []params.RevokeCredentialArg{
+			{Tag: "cloudcred-meep_bruce_three"},
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(results.Results, tc.HasLen, 1)
+	c.Check(params.IsCodeNotFound(results.Results[0].Error), tc.IsTrue)
+	c.Check(results.Results[0].Error.Message, tc.Equals, fmt.Sprintf("credential %s not found", tag.String()))
+	c.Check(results.Results[0].Error.Code, tc.Equals, params.CodeNotFound)
+}
+
 func (s *cloudSuite) TestRevokeCredentialsAdminAccess(c *tc.C) {
 	adminTag := names.NewUserTag("admin")
 	defer s.setup(c, adminTag).Finish()
