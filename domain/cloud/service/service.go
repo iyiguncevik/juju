@@ -58,6 +58,10 @@ func (s *Service) CreateCloud(ctx context.Context, owner user.Name, cloud cloud.
 	ctx, span := trace.Start(ctx, trace.NameFromFunc())
 	defer span.End()
 
+	if len(cloud.AuthTypes) == 0 {
+		return errors.Errorf("empty auth-types %w", coreerrors.NotValid)
+	}
+
 	if cloud.Name == "" {
 		return errors.Errorf("%w cloud name cannot be empty", coreerrors.NotValid)
 	}
@@ -66,6 +70,7 @@ func (s *Service) CreateCloud(ctx context.Context, owner user.Name, cloud cloud.
 	if err != nil {
 		return errors.Errorf("creating uuid for cloud %q: %w", cloud.Name, err)
 	}
+
 	err = s.st.CreateCloud(ctx, owner, credUUID.String(), cloud)
 	if err != nil {
 		return errors.Errorf("creating cloud %q: %w", cloud.Name, err)
