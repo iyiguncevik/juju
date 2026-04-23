@@ -31,7 +31,6 @@ import (
 	"github.com/juju/juju/cmd/internal/agent/agentconf"
 	"github.com/juju/juju/cmd/internal/run"
 	agentcmd "github.com/juju/juju/cmd/jujud-controller/agent"
-	jujudagentcmd "github.com/juju/juju/cmd/jujud/agent"
 	"github.com/juju/juju/core/arch"
 	"github.com/juju/juju/core/machinelock"
 	"github.com/juju/juju/core/model"
@@ -45,7 +44,6 @@ import (
 	"github.com/juju/juju/internal/upgrades"
 	"github.com/juju/juju/internal/worker/dbaccessor"
 	"github.com/juju/juju/internal/worker/dbreplaccessor"
-	"github.com/juju/juju/internal/worker/logsender"
 	"github.com/juju/juju/internal/worker/uniter/runner/jujuc"
 	jujunames "github.com/juju/juju/juju/names"
 	"github.com/juju/juju/juju/osenv"
@@ -252,11 +250,6 @@ func jujuDMain(args []string, ctx *cmd.Context) (code int, err error) {
 		return &jujudWriter{target: target}
 	}
 
-	bufferedLogger, err := logsender.InstallBufferedLogWriter(loggo.DefaultContext(), 1048576)
-	if err != nil {
-		return 1, errors.Trace(err)
-	}
-	jujud.Register(jujudagentcmd.NewModelCommand(bufferedLogger))
 	jujud.Register(agentcmd.NewBootstrapCommand())
 
 	// TODO(katco-): AgentConf type is doing too much. The
@@ -317,8 +310,6 @@ func Main(args []string) int {
 	commandName := filepath.Base(args[0])
 	switch commandName {
 	case jujunames.Jujud:
-		code, err = jujuDMain(args, ctx)
-	case jujunames.JujudController:
 		code, err = jujuDMain(args, ctx)
 	case jujunames.JujuExec:
 		lock, err := machinelock.New(machinelock.Config{
