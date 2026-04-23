@@ -2359,10 +2359,13 @@ func (s *uniterRelationSuite) TestNetworkInfoWithRelationUsesRelationNetwork(c *
 		RelationId: &relID,
 	}
 
-	s.expectGetRelationUUIDByID(relID, relUUID, nil)
 	s.networkService.EXPECT().GetUnitEndpointNetworks(
 		gomock.Any(), unitName, args.Endpoints,
-	).Times(0)
+	).Return([]domainnetwork.UnitNetwork{{
+		EndpointName:     "database",
+		IngressAddresses: []string{"192.0.2.10"},
+	}}, nil)
+	s.expectGetRelationUUIDByID(relID, relUUID, nil)
 	s.networkService.EXPECT().GetUnitRelationNetwork(gomock.Any(), unitName, relUUID).Return(domainnetwork.UnitNetwork{
 		EndpointName:     "database",
 		IngressAddresses: []string{"198.51.100.10"},
@@ -2394,6 +2397,42 @@ func (s *uniterRelationSuite) TestNetworkInfoWithRelationUsesRelationNetwork(c *
 				}},
 				IngressAddresses: []string{"198.51.100.10"},
 				EgressSubnets:    []string{"203.0.113.0/24"},
+			},
+		},
+	})
+}
+
+func (s *uniterRelationSuite) TestNetworkInfoWithRelationPreservesRequestedEndpointNetworks(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	relID := 42
+	relUUID := tc.Must(c, corerelation.NewUUID)
+	unitName := coreunit.Name(s.wordpressUnitTag.Id())
+	args := params.NetworkInfoParams{
+		Unit:       s.wordpressUnitTag.String(),
+		Endpoints:  []string{"database"},
+		RelationId: &relID,
+	}
+
+	s.networkService.EXPECT().GetUnitEndpointNetworks(
+		gomock.Any(), unitName, args.Endpoints,
+	).Return([]domainnetwork.UnitNetwork{{
+		EndpointName:     "database",
+		IngressAddresses: []string{"192.0.2.10"},
+	}}, nil)
+	s.expectGetRelationUUIDByID(relID, relUUID, nil)
+	s.networkService.EXPECT().GetUnitRelationNetwork(gomock.Any(), unitName, relUUID).Return(domainnetwork.UnitNetwork{
+		EndpointName:     "database-peers",
+		IngressAddresses: []string{"198.51.100.10"},
+		EgressSubnets:    []string{"203.0.113.0/24"},
+	}, nil)
+
+	result, err := s.uniter.NetworkInfo(c.Context(), args)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(result, tc.DeepEquals, params.NetworkInfoResults{
+		Results: map[string]params.NetworkInfoResult{
+			"database": {
+				IngressAddresses: []string{"192.0.2.10"},
 			},
 		},
 	})

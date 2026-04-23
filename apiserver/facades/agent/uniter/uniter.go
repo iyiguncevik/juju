@@ -7,6 +7,7 @@ import (
 	"context"
 	"maps"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -198,15 +199,16 @@ func (u *UniterAPI) OpenedMachinePortRangesByEndpoint(ctx context.Context, args 
 			}
 
 			// Ensure results are sorted by endpoint name to be consistent.
-			sort.Slice(result.Results[i].UnitPortRanges[unitTag], func(a, b int) bool {
-				return result.Results[i].UnitPortRanges[unitTag][a].Endpoint < result.Results[i].UnitPortRanges[unitTag][b].Endpoint
-			})
+			r := result.Results[i].UnitPortRanges[unitTag]
+			sort.Slice(r, func(a, b int) bool { return r[a].Endpoint < r[b].Endpoint })
 		}
 	}
 	return result, nil
 }
 
-func (u *UniterAPI) getOneMachineOpenedPortRanges(ctx context.Context, canAccess common.AuthFunc, machineTag string) (map[coreunit.Name]network.GroupedPortRanges, error) {
+func (u *UniterAPI) getOneMachineOpenedPortRanges(
+	ctx context.Context, canAccess common.AuthFunc, machineTag string,
+) (map[coreunit.Name]network.GroupedPortRanges, error) {
 	tag, err := names.ParseMachineTag(machineTag)
 	if err != nil {
 		return nil, apiservererrors.ErrPerm
@@ -2340,6 +2342,19 @@ func (u *UniterAPI) NetworkInfo(ctx context.Context, args params.NetworkInfoPara
 		Results: make(map[string]params.NetworkInfoResult),
 	}
 
+	if len(args.Endpoints) > 0 {
+		infos, err := u.networkService.GetUnitEndpointNetworks(ctx, unitName, args.Endpoints)
+		if errors.Is(err, applicationerrors.UnitNotFound) {
+			return params.NetworkInfoResults{}, errors.NotFoundf("unit %q", unitTag.Id())
+		} else if err != nil {
+			return params.NetworkInfoResults{}, internalerrors.Capture(err)
+		}
+
+		for _, info := range infos {
+			results.Results[info.EndpointName] = unitNetworkToNetworkInfoResult(info)
+		}
+	}
+
 	if args.RelationId != nil {
 		relationUUID, err := u.relationService.GetRelationUUIDByID(
 			ctx, *args.RelationId,
@@ -2359,26 +2374,19 @@ func (u *UniterAPI) NetworkInfo(ctx context.Context, args params.NetworkInfoPara
 		} else if err != nil {
 			return params.NetworkInfoResults{}, internalerrors.Capture(err)
 		}
-		results.Results[info.EndpointName] = unitNetworkToNetworkInfoResult(info)
-		return results, nil
-	}
 
-	infos, err := u.networkService.GetUnitEndpointNetworks(ctx, unitName, args.Endpoints)
-	if errors.Is(err, applicationerrors.UnitNotFound) {
-		return params.NetworkInfoResults{}, errors.NotFoundf("unit %q", unitTag.Id())
-	} else if err != nil {
-		return params.NetworkInfoResults{}, internalerrors.Capture(err)
-	}
-
-	for _, info := range infos {
-		results.Results[info.EndpointName] = unitNetworkToNetworkInfoResult(info)
+		overrideRelationEndpoint := len(args.Endpoints) == 0 ||
+			slices.Contains(args.Endpoints, info.EndpointName)
+		if overrideRelationEndpoint {
+			results.Results[info.EndpointName] = unitNetworkToNetworkInfoResult(info)
+		}
 	}
 	return results, nil
 }
 
 // WatchUnitRelations returns a StringsWatcher, for each given
 // unit, that notifies of changes to the lifecycles of relations
-// relevant to that unit. For principal units, this will be all of the
+// relevant to that unit. For principal units, this will be all the
 // relations for the application. For subordinate units, only
 // relations with the principal unit's application will be monitored.
 func (u *UniterAPI) WatchUnitRelations(ctx context.Context, args params.Entities) (params.StringsWatchResults, error) {
@@ -3210,14 +3218,14 @@ func (u *UniterAPI) watchUnit(ctx context.Context, tag names.UnitTag) (watcher.N
 
 // Merge merges in the provided leadership settings. Only leaders for
 // the given service may perform this operation.
-func (u *UniterAPIv20) Merge(ctx context.Context, bulkArgs params.MergeLeadershipSettingsBulkParams) (params.ErrorResults, error) {
+func (u *UniterAPIv20) Merge(_ context.Context, bulkArgs params.MergeLeadershipSettingsBulkParams) (params.ErrorResults, error) {
 	results := make([]params.ErrorResult, len(bulkArgs.Params))
 	return params.ErrorResults{Results: results}, nil
 }
 
 // Read reads leadership settings for the provided service ID. Any
 // unit of the service may perform this operation.
-func (u *UniterAPIv20) Read(ctx context.Context, bulkArgs params.Entities) (params.GetLeadershipSettingsBulkResults, error) {
+func (u *UniterAPIv20) Read(_ context.Context, bulkArgs params.Entities) (params.GetLeadershipSettingsBulkResults, error) {
 	results := make([]params.GetLeadershipSettingsResult, len(bulkArgs.Entities))
 	return params.GetLeadershipSettingsBulkResults{Results: results}, nil
 }
@@ -3252,9 +3260,9 @@ func (u *UniterAPI) Merge(ctx context.Context, _, _ struct{}) {}
 func (u *UniterAPI) Read(ctx context.Context, _, _ struct{}) {}
 
 // WatchLeadershipSettings is not implemented in version 21 of the uniter.
-func (u *UniterAPI) WatchLeadershipSettings(ctx context.Context, _, _ struct{}) {}
+func (u *UniterAPI) WatchLeadershipSettings(_ context.Context, _, _ struct{}) {}
 
-// GetUnitContexts returns the contexts of the units specified in the request.
+// GetUnitContext returns the contexts of the units specified in the request.
 func (u *UniterAPI) GetUnitContext(ctx context.Context, args params.Entity) (params.UnitContext, error) {
 	canAccess, err := u.accessUnit(ctx)
 	if err != nil {
