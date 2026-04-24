@@ -93,13 +93,11 @@ func (st *State) ValidateApplicationAndEndpointsForOffer(
 	// types. scope_id is container scope, which is not allowed to be offered.
 	stmt, err := st.Prepare(`
 SELECT COUNT(*) AS &countResult.count
-FROM   application AS a
-JOIN   application_endpoint AS ae ON a.uuid = ae.application_uuid
+FROM   application_endpoint AS ae
 JOIN   charm_relation AS cr ON ae.charm_relation_uuid = cr.uuid
-WHERE  a.uuid = $uuid.uuid
 AND    ae.uuid IN ($uuids[:])
 AND    cr.scope_id == 1
-`, uuids{}, uuid{}, countResult{})
+`, uuids{}, countResult{})
 	if err != nil {
 		return "", errors.Errorf("preparing application and endpoint validation query: %w", err)
 	}
@@ -123,7 +121,7 @@ AND    cr.scope_id == 1
 			return errors.Capture(err)
 		}
 
-		err = tx.Query(ctx, stmt, uuid{UUID: applicationUUID}, uuids(endpointUUIDs)).Get(&count)
+		err = tx.Query(ctx, stmt, uuids(endpointUUIDs)).Get(&count)
 		if errors.Is(err, sqlair.ErrNoRows) {
 			// No endpoints with container types, validation successful.
 			return nil
