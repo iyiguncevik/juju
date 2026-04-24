@@ -9,8 +9,10 @@ import (
 	"github.com/juju/tc"
 
 	"github.com/juju/juju/core/network"
+	corestorage "github.com/juju/juju/core/storage"
 	unittesting "github.com/juju/juju/core/unit/testing"
 	"github.com/juju/juju/domain/secret"
+	domainstorage "github.com/juju/juju/domain/storage"
 )
 
 type commitHookChangesArgSuite struct{}
@@ -24,7 +26,7 @@ func (s *commitHookChangesArgSuite) TestValidateAndHasChangesNoChanges(c *tc.C) 
 		UnitName: unittesting.GenNewName(c, "testing/0"),
 	}.ValidateAndHasChanges()
 
-	c.Check(err, tc.ErrorIsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Check(hasChanges, tc.Equals, false)
 }
 
@@ -34,7 +36,24 @@ func (s *commitHookChangesArgSuite) TestValidateAndHasChangesCreateSecret(c *tc.
 		SecretCreates: []CreateSecretArg{{CreateCharmSecretParams: secret.CreateCharmSecretParams{}}},
 	}.ValidateAndHasChanges()
 
-	c.Check(err, tc.ErrorIsNil)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(hasChanges, tc.Equals, true)
+}
+
+func (s *commitHookChangesArgSuite) TestValidateAndHasChangesAddStorage(c *tc.C) {
+	hasChanges, err := CommitHookChangesArg{
+		UnitName: unittesting.GenNewName(c, "testing/0"),
+		AddStorage: []PreparedStorageAdd{{
+			StorageName: corestorage.Name("data"),
+			Storage: domainstorage.IAASUnitAddStorageArg{
+				UnitAddStorageArg: domainstorage.UnitAddStorageArg{
+					CountLessThanEqual: 1,
+				},
+			},
+		}},
+	}.ValidateAndHasChanges()
+
+	c.Assert(err, tc.ErrorIsNil)
 	c.Check(hasChanges, tc.Equals, true)
 }
 

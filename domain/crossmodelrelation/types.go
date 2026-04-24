@@ -4,8 +4,6 @@
 package crossmodelrelation
 
 import (
-	"maps"
-	"slices"
 	"time"
 
 	"gopkg.in/macaroon.v2"
@@ -383,28 +381,15 @@ type CreateOfferArgs struct {
 	// UUID is the unique identifier of the new offer.
 	UUID offer.UUID
 
-	// ApplicationName is the name of the application to which the offer pertains.
-	ApplicationName string
+	// ApplicationUUID is the UUID of the application to which the offer
+	// pertains.
+	ApplicationUUID string
 
 	// Endpoints is the collection of endpoint names offered.
 	Endpoints []string
 
 	// OfferName is the name of the offer.
 	OfferName string
-}
-
-// MakeCreateOfferArgs returns a CreateOfferArgs from the given
-// ApplicationOfferArgs and uuid.
-func MakeCreateOfferArgs(in ApplicationOfferArgs, offerUUID offer.UUID) CreateOfferArgs {
-	return CreateOfferArgs{
-		UUID:            offerUUID,
-		ApplicationName: in.ApplicationName,
-		// There was an original intention to allow for endpoint aliases,
-		// however it was never implemented. Just use the maps keys from
-		// here.
-		Endpoints: slices.Collect(maps.Keys(in.Endpoints)),
-		OfferName: in.OfferName,
-	}
 }
 
 // OfferFilter is used to query applications offered

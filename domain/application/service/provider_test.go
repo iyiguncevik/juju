@@ -59,7 +59,7 @@ func TestProviderServiceSuite(t *testing.T) {
 
 func (s *providerServiceSuite) TestCreateCAASApplication(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
@@ -67,6 +67,7 @@ func (s *providerServiceSuite) TestCreateCAASApplication(c *tc.C) {
 	now := new(s.clock.Now())
 	us := []application.AddCAASUnitArg{{
 		AddUnitArg: application.AddUnitArg{
+			UnitUUID:    tc.Must(c, coreunit.NewUUID),
 			NetNodeUUID: tc.Must(c, domainnetwork.NewNetNodeUUID),
 			UnitStatusArg: application.UnitStatusArg{
 				AgentStatus: &status.StatusInfo[status.UnitAgentStatusType]{
@@ -228,7 +229,7 @@ func (s *providerServiceSuite) TestCreateCAASApplication(c *tc.C) {
 
 func (s *providerServiceSuite) TestCreateIAASApplicationWithApplicationStatus(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
@@ -294,7 +295,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithApplicationStatus(c 
 
 func (s *providerServiceSuite) TestCreateIAASApplication(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
@@ -394,7 +395,7 @@ func (s *providerServiceSuite) TestCreateIAASApplication(c *tc.C) {
 
 func (s *providerServiceSuite) TestCreateIAASApplicationWithConfig(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
@@ -518,7 +519,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithConfig(c *tc.C) {
 
 func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
@@ -946,7 +947,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationMachineScope(c *tc.C) {
 
 func (s *providerServiceSuite) TestCreateIAASApplicationPrecheckFailure(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
 	preCheckError := errors.New("precheck failure error")
@@ -1010,7 +1011,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationPrecheckFailure(c *tc.C)
 
 func (s *providerServiceSuite) TestCreateIAASApplicationPendingResources(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 	objectStoreUUID := objectstoretesting.GenObjectStoreUUID(c)
@@ -1225,7 +1226,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithNoArchitecture(c *tc
 
 func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidResourcesNotAllResourcesResolved(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{Name: "foo", Resources: map[string]charmresource.Meta{
 		"not-resolved": {Name: "not-resolved"},
@@ -1258,7 +1259,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidResourcesNotA
 // pending resources are mutually exclusive.
 func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidResourceBothTypes(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{Name: "foo", Resources: map[string]charmresource.Meta{
 		"not-resolved": {Name: "not-resolved"},
@@ -1334,7 +1335,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidResourcesInva
 
 func (s *providerServiceSuite) testCreateIAASApplicationWithInvalidResource(c *tc.C, resources ResolvedResources) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{Name: "foo"}).MinTimes(1)
 	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
@@ -1360,7 +1361,7 @@ func (s *providerServiceSuite) testCreateIAASApplicationWithInvalidResource(c *t
 
 func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidApplicationConfigMissingOption(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{Name: "foo"}).MinTimes(1)
 	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
@@ -1403,7 +1404,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidApplicationCo
 
 func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidApplicationConfigWrongType(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	s.charm.EXPECT().Meta().Return(&internalcharm.Meta{Name: "foo"}).MinTimes(1)
 	s.charm.EXPECT().Manifest().Return(&internalcharm.Manifest{
@@ -1445,7 +1446,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationWithInvalidApplicationCo
 
 func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	id := tc.Must(c, coreapplication.NewUUID)
 
@@ -1518,7 +1519,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //						Name: "data",
 //					},
 //				},
-//				StorageToAttach: []application.CreateStorageAttachmentArg{
+//				NewStorageToAttach: []application.CreateStorageAttachmentArg{
 //					{},
 //				},
 //				StorageToOwn: []storage.StorageInstanceUUID{""},
@@ -1686,7 +1687,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //						Name: "data",
 //					},
 //				},
-//				StorageToAttach: []application.CreateStorageAttachmentArg{
+//				NewStorageToAttach: []application.CreateStorageAttachmentArg{
 //					{}, {}, {},
 //				},
 //				StorageToOwn: []storage.StorageInstanceUUID{"", "", ""},
@@ -1845,7 +1846,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //						Name: "data",
 //					},
 //				},
-//				StorageToAttach: []application.CreateStorageAttachmentArg{
+//				NewStorageToAttach: []application.CreateStorageAttachmentArg{
 //					{},
 //				},
 //				StorageToOwn: []storage.StorageInstanceUUID{""},
@@ -2009,7 +2010,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 //						Name: "data",
 //					},
 //				},
-//				StorageToAttach: []application.CreateStorageAttachmentArg{
+//				NewStorageToAttach: []application.CreateStorageAttachmentArg{
 //					{}, {},
 //				},
 //				StorageToOwn: []storage.StorageInstanceUUID{"", ""},
@@ -2251,7 +2252,7 @@ func (s *providerServiceSuite) TestCreateIAASApplicationError(c *tc.C) {
 
 func (s *providerServiceSuite) TestCreateIAASApplicationPlatformArchContradictsConstraints(c *tc.C) {
 	defer s.setupMocks(c).Finish()
-	setCreateApplicationNoopStorageExpects(s.storageService)
+	setCreateApplicationNoopStorageExpects(c, s.state, s.storageService)
 
 	s.provider.EXPECT().ConstraintsValidator(gomock.Any()).Return(nil, nil)
 	s.state.EXPECT().GetModelConstraints(gomock.Any()).Return(constraints.Constraints{}, nil)
@@ -2608,7 +2609,7 @@ func (s *providerServiceSuite) TestSetConstraints(c *tc.C) {
 func (s *providerServiceSuite) TestAddCAASUnitsEmptyConstraints(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
-	setAddUnitNoopStorageExpects(s.storageService)
+	setAddUnitNoopStorageExpects(c, s.state, s.storageService)
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
 
@@ -2659,7 +2660,7 @@ func (s *providerServiceSuite) TestAddCAASUnitsEmptyConstraints(c *tc.C) {
 func (s *providerServiceSuite) TestAddCAASUnitsAppConstraints(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
-	setAddUnitNoopStorageExpects(s.storageService)
+	setAddUnitNoopStorageExpects(c, s.state, s.storageService)
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
 
@@ -2729,7 +2730,7 @@ func (s *providerServiceSuite) TestAddCAASUnitsAppConstraints(c *tc.C) {
 func (s *providerServiceSuite) TestAddCAASUnitsModelConstraints(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
-	setAddUnitNoopStorageExpects(s.storageService)
+	setAddUnitNoopStorageExpects(c, s.state, s.storageService)
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
 
@@ -2792,7 +2793,7 @@ func (s *providerServiceSuite) TestAddCAASUnitsModelConstraints(c *tc.C) {
 func (s *providerServiceSuite) TestAddCAASUnitsFullConstraints(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
-	setAddUnitNoopStorageExpects(s.storageService)
+	setAddUnitNoopStorageExpects(c, s.state, s.storageService)
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
 	unitUUID := tc.Must(c, coreunit.NewUUID)
@@ -2873,7 +2874,7 @@ func (s *providerServiceSuite) TestAddIAASUnitsApplicationNotFound(c *tc.C) {
 func (s *providerServiceSuite) TestAddIAASUnitsInvalidPlacement(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
-	setAddUnitNoopStorageExpects(s.storageService)
+	setAddUnitNoopStorageExpects(c, s.state, s.storageService)
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
 	unitUUID := tc.Must(c, coreunit.NewUUID)
@@ -2906,7 +2907,7 @@ func (s *providerServiceSuite) TestAddIAASUnitsInvalidPlacement(c *tc.C) {
 func (s *providerServiceSuite) TestAddIAASUnitsMachinePlacement(c *tc.C) {
 	ctrl := s.setupMocks(c)
 	defer ctrl.Finish()
-	setAddUnitNoopStorageExpects(s.storageService)
+	setAddUnitNoopStorageExpects(c, s.state, s.storageService)
 
 	appUUID := tc.Must(c, coreapplication.NewUUID)
 	unitUUID := tc.Must(c, coreunit.NewUUID)
@@ -3129,7 +3130,7 @@ func (s *providerServiceSuite) TestAddStorageForIAASUnitNotFound(c *tc.C) {
 	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
 		Return(internal.StorageDirective{}, applicationerrors.UnitNotFound)
 
-	_, err := s.service.AddStorageForIAASUnit(c.Context(), "pgdata", unitUUID, 1, domainstorage.AddUnitStorageOverride{})
+	_, err := s.service.AddStorageForIAASUnit(c.Context(), "pgdata", unitUUID, 1, application.AddUnitStorageOverride{})
 	c.Assert(err, tc.ErrorIs, applicationerrors.UnitNotFound)
 }
 
@@ -3140,7 +3141,7 @@ func (s *providerServiceSuite) TestAddStorageForIAASUnitInvalidUUID(c *tc.C) {
 	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), coreunit.UUID("!!!"), corestorage.Name("pgdata")).
 		Return(internal.StorageDirective{}, coreerrors.NotValid)
 
-	_, err := s.service.AddStorageForIAASUnit(c.Context(), "pgdata", "!!!", 1, domainstorage.AddUnitStorageOverride{})
+	_, err := s.service.AddStorageForIAASUnit(c.Context(), "pgdata", "!!!", 1, application.AddUnitStorageOverride{})
 	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
 }
 
@@ -3152,7 +3153,7 @@ func (s *providerServiceSuite) TestAddStorageForIAASUnitInvalidName(c *tc.C) {
 	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("!!!")).
 		Return(internal.StorageDirective{}, corestorage.InvalidStorageName)
 
-	_, err := s.service.AddStorageForIAASUnit(c.Context(), "!!!", unitUUID, 1, domainstorage.AddUnitStorageOverride{})
+	_, err := s.service.AddStorageForIAASUnit(c.Context(), "!!!", unitUUID, 1, application.AddUnitStorageOverride{})
 	c.Assert(err, tc.ErrorIs, corestorage.InvalidStorageName)
 }
 
@@ -3162,6 +3163,13 @@ func (s *providerServiceSuite) TestAddStorageForIAASUnitValidates(c *tc.C) {
 
 	unitUUID := tc.Must(c, coreunit.NewUUID)
 	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
+	charmStorageDef := internal.CharmStorageDefinitionForValidation{
+		Name:        "pgdata",
+		Type:        applicationcharm.StorageFilesystem,
+		MinimumSize: 10,
+		CountMin:    1,
+		CountMax:    666,
+	}
 	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
 		Return(internal.StorageDirective{
 			Name:             "pgdata",
@@ -3169,31 +3177,30 @@ func (s *providerServiceSuite) TestAddStorageForIAASUnitValidates(c *tc.C) {
 			Count:            1,
 			MaxCount:         666,
 		}, nil)
-	s.state.EXPECT().GetCharmStorageAndInstanceCountByUnitUUID(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
-		Return(internalcharm.Storage{
-			Name:        "pgdata",
-			Type:        internalcharm.StorageFilesystem,
-			MinimumSize: 10,
-			CountMin:    1,
-			CountMax:    666,
-		}, 66, nil)
-	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(gomock.Any(), map[string]internalcharm.Storage{
-		"pgdata": {
-			Name:        "pgdata",
-			Type:        internalcharm.StorageFilesystem,
-			CountMin:    1,
-			CountMax:    666,
-			MinimumSize: 10,
-		},
-	}, map[string]storageservice.StorageDirectiveOverride{
-		"pgdata": {
-			Count:    new(uint32(76)),
-			PoolUUID: new(poolUUID),
-			Size:     new(uint64(6)),
-		},
-	}).Return(applicationerrors.StorageCountLimitExceeded{})
+	s.state.EXPECT().GetStorageAddInfoByUnitUUID(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageInfoForAdd{
+			CharmStorageDefinitionForValidation: charmStorageDef,
+			AlreadyAttachedCount:                66,
+		}, nil)
+	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(
+		gomock.Any(),
+		map[string]internal.CharmStorageDefinitionForValidation{
+			"pgdata": {
+				Name:        "pgdata",
+				Type:        applicationcharm.StorageFilesystem,
+				CountMin:    1,
+				CountMax:    666,
+				MinimumSize: 10,
+			},
+		}, map[string]storageservice.StorageDirectiveOverride{
+			"pgdata": {
+				Count:    new(uint32(76)),
+				PoolUUID: new(poolUUID),
+				Size:     new(uint64(6)),
+			},
+		}).Return(applicationerrors.StorageCountLimitExceeded{})
 
-	_, err := s.service.AddStorageForIAASUnit(c.Context(), "pgdata", unitUUID, 10, domainstorage.AddUnitStorageOverride{
+	_, err := s.service.AddStorageForIAASUnit(c.Context(), "pgdata", unitUUID, 10, application.AddUnitStorageOverride{
 		SizeMiB:         new(uint64(6)),
 		StoragePoolUUID: new(poolUUID),
 	})
@@ -3206,6 +3213,13 @@ func (s *providerServiceSuite) TestAddStorageForIAASUnit(c *tc.C) {
 
 	unitUUID := tc.Must(c, coreunit.NewUUID)
 	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
+	charmStorageDef := internal.CharmStorageDefinitionForValidation{
+		Name:        "pgdata",
+		Type:        applicationcharm.StorageFilesystem,
+		MinimumSize: 10,
+		CountMin:    1,
+		CountMax:    666,
+	}
 
 	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
 		Return(internal.StorageDirective{
@@ -3214,22 +3228,13 @@ func (s *providerServiceSuite) TestAddStorageForIAASUnit(c *tc.C) {
 			Count:            1,
 			MaxCount:         666,
 		}, nil)
-	s.state.EXPECT().GetCharmStorageAndInstanceCountByUnitUUID(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
-		Return(internalcharm.Storage{
-			Name:        "pgdata",
-			Type:        internalcharm.StorageFilesystem,
-			MinimumSize: 10,
-			CountMin:    1,
-			CountMax:    666,
-		}, 66, nil)
-	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(gomock.Any(), map[string]internalcharm.Storage{
-		"pgdata": {
-			Name:        "pgdata",
-			Type:        internalcharm.StorageFilesystem,
-			CountMin:    1,
-			CountMax:    666,
-			MinimumSize: 10,
-		},
+	s.state.EXPECT().GetStorageAddInfoByUnitUUID(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageInfoForAdd{
+			CharmStorageDefinitionForValidation: charmStorageDef,
+			AlreadyAttachedCount:                66,
+		}, nil)
+	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(gomock.Any(), map[string]internal.CharmStorageDefinitionForValidation{
+		"pgdata": charmStorageDef,
 	}, map[string]storageservice.StorageDirectiveOverride{
 		"pgdata": {
 			Count:    new(uint32(76)),
@@ -3267,7 +3272,7 @@ func (s *providerServiceSuite) TestAddStorageForIAASUnit(c *tc.C) {
 		VolumesToOwn:      volToOwn,
 	})
 
-	_, err := s.service.AddStorageForIAASUnit(c.Context(), "pgdata", unitUUID, uint32(10), domainstorage.AddUnitStorageOverride{
+	_, err := s.service.AddStorageForIAASUnit(c.Context(), "pgdata", unitUUID, uint32(10), application.AddUnitStorageOverride{
 		SizeMiB:         new(uint64(6)),
 		StoragePoolUUID: new(poolUUID),
 	})
@@ -3283,7 +3288,7 @@ func (s *providerServiceSuite) TestAddStorageForCAASUnitNotFound(c *tc.C) {
 	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
 		Return(internal.StorageDirective{}, applicationerrors.UnitNotFound)
 
-	_, err := s.service.AddStorageForCAASUnit(c.Context(), "pgdata", unitUUID, 1, domainstorage.AddUnitStorageOverride{})
+	_, err := s.service.AddStorageForCAASUnit(c.Context(), "pgdata", unitUUID, 1, application.AddUnitStorageOverride{})
 	c.Assert(err, tc.ErrorIs, applicationerrors.UnitNotFound)
 }
 
@@ -3294,7 +3299,7 @@ func (s *providerServiceSuite) TestAddStorageForCAASUnitInvalidUUID(c *tc.C) {
 	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), coreunit.UUID("!!!"), corestorage.Name("pgdata")).
 		Return(internal.StorageDirective{}, coreerrors.NotValid)
 
-	_, err := s.service.AddStorageForCAASUnit(c.Context(), "pgdata", "!!!", 1, domainstorage.AddUnitStorageOverride{})
+	_, err := s.service.AddStorageForCAASUnit(c.Context(), "pgdata", "!!!", 1, application.AddUnitStorageOverride{})
 	c.Assert(err, tc.ErrorIs, coreerrors.NotValid)
 }
 
@@ -3306,7 +3311,7 @@ func (s *providerServiceSuite) TestAddStorageForCAASUnitInvalidName(c *tc.C) {
 	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("!!!")).
 		Return(internal.StorageDirective{}, corestorage.InvalidStorageName)
 
-	_, err := s.service.AddStorageForCAASUnit(c.Context(), "!!!", unitUUID, 1, domainstorage.AddUnitStorageOverride{})
+	_, err := s.service.AddStorageForCAASUnit(c.Context(), "!!!", unitUUID, 1, application.AddUnitStorageOverride{})
 	c.Assert(err, tc.ErrorIs, corestorage.InvalidStorageName)
 }
 
@@ -3316,6 +3321,14 @@ func (s *providerServiceSuite) TestAddStorageForCAASUnitValidates(c *tc.C) {
 
 	unitUUID := tc.Must(c, coreunit.NewUUID)
 	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
+	charmStorageDef := internal.CharmStorageDefinitionForValidation{
+		Name:        "pgdata",
+		Type:        applicationcharm.StorageFilesystem,
+		MinimumSize: 10,
+		CountMin:    1,
+		CountMax:    666,
+	}
+
 	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
 		Return(internal.StorageDirective{
 			Name:             "pgdata",
@@ -3323,31 +3336,30 @@ func (s *providerServiceSuite) TestAddStorageForCAASUnitValidates(c *tc.C) {
 			Count:            1,
 			MaxCount:         666,
 		}, nil)
-	s.state.EXPECT().GetCharmStorageAndInstanceCountByUnitUUID(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
-		Return(internalcharm.Storage{
-			Name:        "pgdata",
-			Type:        internalcharm.StorageFilesystem,
-			MinimumSize: 10,
-			CountMin:    1,
-			CountMax:    666,
-		}, 66, nil)
-	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(gomock.Any(), map[string]internalcharm.Storage{
-		"pgdata": {
-			Name:        "pgdata",
-			Type:        internalcharm.StorageFilesystem,
-			CountMin:    1,
-			CountMax:    666,
-			MinimumSize: 10,
-		},
-	}, map[string]storageservice.StorageDirectiveOverride{
-		"pgdata": {
-			Count:    new(uint32(76)),
-			PoolUUID: new(poolUUID),
-			Size:     new(uint64(6)),
-		},
-	}).Return(applicationerrors.StorageCountLimitExceeded{})
+	s.state.EXPECT().GetStorageAddInfoByUnitUUID(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageInfoForAdd{
+			CharmStorageDefinitionForValidation: charmStorageDef,
+			AlreadyAttachedCount:                66,
+		}, nil)
+	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(
+		gomock.Any(),
+		map[string]internal.CharmStorageDefinitionForValidation{
+			"pgdata": {
+				Name:        "pgdata",
+				Type:        applicationcharm.StorageFilesystem,
+				CountMin:    1,
+				CountMax:    666,
+				MinimumSize: 10,
+			},
+		}, map[string]storageservice.StorageDirectiveOverride{
+			"pgdata": {
+				Count:    new(uint32(76)),
+				PoolUUID: new(poolUUID),
+				Size:     new(uint64(6)),
+			},
+		}).Return(applicationerrors.StorageCountLimitExceeded{})
 
-	_, err := s.service.AddStorageForCAASUnit(c.Context(), "pgdata", unitUUID, 10, domainstorage.AddUnitStorageOverride{
+	_, err := s.service.AddStorageForCAASUnit(c.Context(), "pgdata", unitUUID, 10, application.AddUnitStorageOverride{
 		SizeMiB:         new(uint64(6)),
 		StoragePoolUUID: new(poolUUID),
 	})
@@ -3360,6 +3372,13 @@ func (s *providerServiceSuite) TestAddStorageForCAASUnit(c *tc.C) {
 
 	unitUUID := tc.Must(c, coreunit.NewUUID)
 	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
+	charmStorageDef := internal.CharmStorageDefinitionForValidation{
+		Name:        "pgdata",
+		Type:        applicationcharm.StorageFilesystem,
+		MinimumSize: 10,
+		CountMin:    1,
+		CountMax:    666,
+	}
 
 	s.storageService.EXPECT().GetUnitStorageDirectiveByName(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
 		Return(internal.StorageDirective{
@@ -3368,29 +3387,23 @@ func (s *providerServiceSuite) TestAddStorageForCAASUnit(c *tc.C) {
 			Count:            1,
 			MaxCount:         666,
 		}, nil)
-	s.state.EXPECT().GetCharmStorageAndInstanceCountByUnitUUID(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
-		Return(internalcharm.Storage{
-			Name:        "pgdata",
-			Type:        internalcharm.StorageFilesystem,
-			MinimumSize: 10,
-			CountMin:    1,
-			CountMax:    666,
-		}, 66, nil)
-	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(gomock.Any(), map[string]internalcharm.Storage{
-		"pgdata": {
-			Name:        "pgdata",
-			Type:        internalcharm.StorageFilesystem,
-			CountMin:    1,
-			CountMax:    666,
-			MinimumSize: 10,
+	s.state.EXPECT().GetStorageAddInfoByUnitUUID(gomock.Any(), unitUUID, corestorage.Name("pgdata")).
+		Return(internal.StorageInfoForAdd{
+			CharmStorageDefinitionForValidation: charmStorageDef,
+			AlreadyAttachedCount:                66,
+		}, nil)
+	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(
+		gomock.Any(),
+		map[string]internal.CharmStorageDefinitionForValidation{
+			"pgdata": charmStorageDef,
 		},
-	}, map[string]storageservice.StorageDirectiveOverride{
-		"pgdata": {
-			Count:    new(uint32(76)),
-			PoolUUID: new(poolUUID),
-			Size:     new(uint64(6)),
-		},
-	})
+		map[string]storageservice.StorageDirectiveOverride{
+			"pgdata": {
+				Count:    new(uint32(76)),
+				PoolUUID: new(poolUUID),
+				Size:     new(uint64(6)),
+			},
+		})
 	unitStorageArgs := domainstorage.UnitAddStorageArg{
 		StorageInstances: []domainstorage.CreateUnitStorageInstanceArg{{
 			Name: "pgdata",
@@ -3409,9 +3422,99 @@ func (s *providerServiceSuite) TestAddStorageForCAASUnit(c *tc.C) {
 
 	s.state.EXPECT().AddStorageForCAASUnit(gomock.Any(), unitUUID, corestorage.Name("pgdata"), unitStorageArgs)
 
-	_, err := s.service.AddStorageForCAASUnit(c.Context(), "pgdata", unitUUID, 10, domainstorage.AddUnitStorageOverride{
+	_, err := s.service.AddStorageForCAASUnit(c.Context(), "pgdata", unitUUID, 10, application.AddUnitStorageOverride{
 		SizeMiB:         new(uint64(6)),
 		StoragePoolUUID: new(poolUUID),
 	})
 	c.Assert(err, tc.ErrorIs, nil)
+}
+func (s *providerServiceSuite) TestPrepareUnitAddStorage(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+	poolUUID := tc.Must(c, domainstorage.NewStoragePoolUUID)
+	directive := internal.StorageDirective{
+		Name:             "pgdata",
+		CharmStorageType: applicationcharm.StorageFilesystem,
+		Count:            1,
+		MaxCount:         10,
+		PoolUUID:         poolUUID,
+		Size:             1024,
+	}
+	charmStorageDef := internal.CharmStorageDefinitionForValidation{
+		Name:        "pgdata",
+		Type:        applicationcharm.StorageFilesystem,
+		MinimumSize: 512,
+		CountMin:    1,
+		CountMax:    10,
+	}
+
+	s.state.EXPECT().GetModelType(gomock.Any()).Return(model.IAAS, nil)
+	s.storageService.EXPECT().GetUnitStorageDirectiveByName(
+		gomock.Any(), unitUUID, corestorage.Name("pgdata"),
+	).Return(directive, nil)
+	s.state.EXPECT().GetStorageAddInfoByUnitUUID(
+		gomock.Any(), unitUUID, corestorage.Name("pgdata"),
+	).Return(internal.StorageInfoForAdd{
+		CharmStorageDefinitionForValidation: charmStorageDef,
+		AlreadyAttachedCount:                2,
+	}, nil)
+	s.storageService.EXPECT().ValidateApplicationStorageDirectiveOverrides(
+		gomock.Any(),
+		map[string]internal.CharmStorageDefinitionForValidation{
+			"pgdata": charmStorageDef,
+		},
+		map[string]storageservice.StorageDirectiveOverride{
+			"pgdata": {
+				Count:    new(uint32(5)),
+				PoolUUID: new(poolUUID),
+				Size:     new(uint64(1024)),
+			},
+		},
+	).Return(nil)
+
+	unitStorageArgs := domainstorage.UnitAddStorageArg{
+		StorageInstances: []domainstorage.CreateUnitStorageInstanceArg{{
+			Name: "pgdata",
+		}},
+		// CountLessThanEqual is set to CountMax-addCount.
+		CountLessThanEqual: 7,
+	}
+	fsToOwn := []domainstorage.FilesystemUUID{tc.Must(c, domainstorage.NewFilesystemUUID)}
+	volToOwn := []domainstorage.VolumeUUID{tc.Must(c, domainstorage.NewVolumeUUID)}
+
+	s.storageService.EXPECT().MakeUnitAddStorageArgs(
+		gomock.Any(), unitUUID, uint32(3), directive,
+	).Return(unitStorageArgs, nil)
+	s.storageService.EXPECT().MakeIAASUnitStorageArgs(
+		gomock.Any(), unitStorageArgs.StorageInstances,
+	).Return(domainstorage.CreateIAASUnitStorageArg{
+		FilesystemsToOwn: fsToOwn,
+		VolumesToOwn:     volToOwn,
+	}, nil)
+
+	got, err := s.service.PrepareUnitAddStorage(
+		c.Context(), "pgdata", unitUUID, 3,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(got, tc.DeepEquals, domainstorage.IAASUnitAddStorageArg{
+		UnitAddStorageArg: unitStorageArgs,
+		FilesystemsToOwn:  fsToOwn,
+		VolumesToOwn:      volToOwn,
+	})
+}
+
+func (s *providerServiceSuite) TestPrepareUnitAddStorageCAASNotSupported(c *tc.C) {
+	ctrl := s.setupMocks(c)
+	defer ctrl.Finish()
+
+	unitUUID := tc.Must(c, coreunit.NewUUID)
+
+	s.state.EXPECT().GetModelType(gomock.Any()).Return(model.CAAS, nil)
+
+	_, err := s.service.PrepareUnitAddStorage(
+		c.Context(), "pgdata", unitUUID, 3,
+	)
+	c.Assert(err, tc.ErrorIs, coreerrors.NotSupported)
 }

@@ -14,11 +14,13 @@ import (
 	"github.com/juju/tc"
 	"go.uber.org/mock/gomock"
 
+	apiservererrors "github.com/juju/juju/apiserver/errors"
 	"github.com/juju/juju/apiserver/facades/client/cloud"
 	"github.com/juju/juju/apiserver/facades/client/cloud/mocks"
 	apiservertesting "github.com/juju/juju/apiserver/testing"
 	jujucloud "github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/credential"
+	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/user"
 	usertesting "github.com/juju/juju/core/user/testing"
@@ -487,6 +489,31 @@ func (s *cloudSuite) TestAddCloudNoAdminPerms(c *tc.C) {
 	c.Assert(err, tc.ErrorMatches, "permission denied")
 }
 
+func (s *cloudSuite) TestAddCloudAlreadyExists(c *tc.C) {
+	adminTag := names.NewUserTag("admin")
+	defer s.setup(c, adminTag).Finish()
+
+	cloud := jujucloud.Cloud{
+		Name: "newcloudname",
+		Type: "maas",
+	}
+	s.cloudService.EXPECT().Cloud(gomock.Any(), "dummy").Return(&cloud, nil)
+	newCloud := jujucloud.Cloud{
+		Name:      "newcloudname",
+		Type:      "maas",
+		AuthTypes: []jujucloud.AuthType{jujucloud.EmptyAuthType, jujucloud.UserPassAuthType},
+		Endpoint:  "fake-endpoint",
+		Regions:   []jujucloud.Region{{Name: "nether", Endpoint: "nether-endpoint"}},
+	}
+	s.cloudService.EXPECT().CreateCloud(gomock.Any(), user.NameFromTag(adminTag), newCloud).
+		Return(clouderrors.AlreadyExists)
+
+	err := s.api.AddCloud(c.Context(), createAddCloudParam("maas"))
+	c.Assert(err, tc.ErrorIs, coreerrors.AlreadyExists)
+	serverErr := apiservererrors.ServerError(err)
+	c.Check(serverErr.Code, tc.Equals, params.CodeAlreadyExists)
+}
+
 func (s *cloudSuite) TestUpdateCloud(c *tc.C) {
 	adminTag := names.NewUserTag("admin")
 	defer s.setup(c, adminTag).Finish()
@@ -933,6 +960,27 @@ func (s *cloudSuite) TestRevokeCredentials(c *tc.C) {
 		Message: "permission denied", Code: params.CodeUnauthorized,
 	})
 	c.Assert(results.Results[2].Error, tc.IsNil)
+}
+
+func (s *cloudSuite) TestRevokeCredentialsNotFound(c *tc.C) {
+	bruceTag := names.NewUserTag("bruce")
+	defer s.setup(c, bruceTag).Finish()
+
+	_, tag := cloudCredentialTag(credParams{name: "three", owner: "bruce", cloudName: "meep", authType: jujucloud.EmptyAuthType,
+		attrs: map[string]string{}})
+
+	s.credService.EXPECT().CheckAndRevokeCredential(gomock.Any(), credential.KeyFromTag(tag), false).Return(credentialerrors.NotFound)
+
+	results, err := s.api.RevokeCredentialsCheckModels(c.Context(), params.RevokeCredentialArgs{
+		Credentials: []params.RevokeCredentialArg{
+			{Tag: "cloudcred-meep_bruce_three"},
+		},
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(results.Results, tc.HasLen, 1)
+	c.Check(params.IsCodeNotFound(results.Results[0].Error), tc.IsTrue)
+	c.Check(results.Results[0].Error.Message, tc.Equals, fmt.Sprintf("credential %s not found", tag.String()))
+	c.Check(results.Results[0].Error.Code, tc.Equals, params.CodeNotFound)
 }
 
 func (s *cloudSuite) TestRevokeCredentialsAdminAccess(c *tc.C) {

@@ -207,10 +207,14 @@ juju add-model mymodel
 juju add-ssh-key "ssh-ed25519 AAAA... yourkeycomment"
 ```
 
-### 4. Status API filtering removed (`StatusArgs.Patterns[]`)
+### 4. Status API filtering is simplified (`StatusArgs.Patterns[]`)
 
-Server-side status filtering via `StatusArgs.Patterns[]` is removed.
-API clients must fetch full status and filter client-side.
+Server-side status filtering via `StatusArgs.Patterns[]` works as follows:
+- Matching occurs only on applications, units and machines.
+- Filtering is based on complete matches - no wildcards or globbing. Examples:
+  - `postgresql` (application)
+  - `postgresql/2` (unit)
+  - `0/lxd/1` (machine)
 
 **Juju 3.6 (API consumer idea)**
 ```go

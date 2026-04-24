@@ -370,12 +370,12 @@ func (s *baseSuite) createOffer(c *tc.C, offerName string) offer.UUID {
 	cmrState := crossmodelrelationstate.NewState(
 		s.TxnRunnerFactory(), coremodel.UUID(s.ModelUUID()), testclock.NewClock(s.now), loggertesting.WrapCheckLog(c),
 	)
-	s.createIAASApplication(c, s.setupApplicationService(c), offerName)
+	applicationUUID := s.createIAASApplication(c, s.setupApplicationService(c), offerName)
 	offerUUID := tc.Must(c, offer.NewUUID)
 
 	err := cmrState.CreateOffer(c.Context(), crossmodelrelation.CreateOfferArgs{
 		UUID:            offerUUID,
-		ApplicationName: offerName,
+		ApplicationUUID: applicationUUID.String(),
 		Endpoints:       []string{"foo", "bar"},
 		OfferName:       offerName,
 	})
@@ -384,7 +384,7 @@ func (s *baseSuite) createOffer(c *tc.C, offerName string) offer.UUID {
 	return offerUUID
 }
 
-func (s *baseSuite) createOfferForApplication(c *tc.C, appName string, offerName string) offer.UUID {
+func (s *baseSuite) createOfferForApplication(c *tc.C, appUUID coreapplication.UUID, offerName string) offer.UUID {
 	cmrState := crossmodelrelationstate.NewState(
 		s.TxnRunnerFactory(), coremodel.UUID(s.ModelUUID()), testclock.NewClock(s.now), loggertesting.WrapCheckLog(c),
 	)
@@ -392,7 +392,7 @@ func (s *baseSuite) createOfferForApplication(c *tc.C, appName string, offerName
 
 	err := cmrState.CreateOffer(c.Context(), crossmodelrelation.CreateOfferArgs{
 		UUID:            offerUUID,
-		ApplicationName: appName,
+		ApplicationUUID: appUUID.String(),
 		Endpoints:       []string{"foo", "bar"},
 		OfferName:       offerName,
 	})
@@ -577,8 +577,8 @@ func (s *baseSuite) createRelationWithRemoteOfferer(c *tc.C) (relation.UUID, cor
 
 func (s *baseSuite) createRelationWithRemoteConsumer(c *tc.C) (relation.UUID, coreapplication.UUID, offer.UUID) {
 	svc := s.setupApplicationService(c)
-	s.createIAASApplication(c, svc, "bar")
-	offerUUID := s.createOfferForApplication(c, "bar", "some-offer")
+	appUUID := s.createIAASApplication(c, svc, "bar")
+	offerUUID := s.createOfferForApplication(c, appUUID, "some-offer")
 	synthAppUUID, _ := s.createRemoteApplicationConsumer(c, "foo", offerUUID)
 
 	relSvc := s.setupRelationService(c)

@@ -57,7 +57,7 @@ func (s *modelOfferSuite) TestCreateOffer(c *tc.C) {
 
 	args := crossmodelrelation.CreateOfferArgs{
 		UUID:            tc.Must(c, offer.NewUUID),
-		ApplicationName: appName,
+		ApplicationUUID: appUUID.String(),
 		Endpoints:       []string{relation.Name, relation2.Name},
 		OfferName:       "test-offer",
 	}
@@ -66,7 +66,7 @@ func (s *modelOfferSuite) TestCreateOffer(c *tc.C) {
 	err := s.state.CreateOffer(c.Context(), args)
 
 	// Assert
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	obtainedOffers := s.readOffers(c)
 	c.Check(obtainedOffers, tc.DeepEquals, []nameAndUUID{
 		{
@@ -118,7 +118,7 @@ func (s *modelOfferSuite) TestCreateOfferDyingAplication(c *tc.C) {
 
 	args := crossmodelrelation.CreateOfferArgs{
 		UUID:            tc.Must(c, offer.NewUUID),
-		ApplicationName: appName,
+		ApplicationUUID: appUUID.String(),
 		Endpoints:       []string{relation.Name, relation2.Name},
 		OfferName:       "test-offer",
 	}
@@ -162,7 +162,7 @@ func (s *modelOfferSuite) TestCreateOfferDeadAplication(c *tc.C) {
 
 	args := crossmodelrelation.CreateOfferArgs{
 		UUID:            tc.Must(c, offer.NewUUID),
-		ApplicationName: appName,
+		ApplicationUUID: appUUID.String(),
 		Endpoints:       []string{relation.Name, relation2.Name},
 		OfferName:       "test-offer",
 	}
@@ -193,7 +193,7 @@ func (s *modelOfferSuite) TestCreateOfferEndpointFail(c *tc.C) {
 
 	args := crossmodelrelation.CreateOfferArgs{
 		UUID:            tc.Must(c, offer.NewUUID),
-		ApplicationName: appName,
+		ApplicationUUID: appUUID.String(),
 		Endpoints:       []string{"fail-me"},
 		OfferName:       "test-offer",
 	}
@@ -235,20 +235,99 @@ func (s *modelOfferSuite) TestDeleteFailedOffer(c *tc.C) {
 	c.Check(s.readOfferEndpoints(c), tc.HasLen, 0)
 }
 
-func (s *modelOfferSuite) TestGetOfferDetailsFilterMultiplePartialResult(c *tc.C) {
-	// Arrange
-	expected := s.setupForGetOfferDetails(c)
+// TestGetOfferDetailsFilterTwoOffersSameApplication creates two offers for the
+// same application and verifies that filtering by offer name and application
+// name returns only the targeted offer.
+func (s *modelOfferSuite) TestGetOfferDetailsFilterTwoOffersSameApplication(c *tc.C) {
+	// Arrange - create one application with two offers, each exposing a
+	// different endpoint.
+	charmReferenceName := "test-charm"
+	charmUUID := s.addCharmWithReferenceName(c, charmReferenceName)
+	description := "testing application"
+	s.addCharmMetadataWithDescription(c, charmUUID, description)
 
-	// Act
+	relation1 := charm.Relation{
+		Name:      "db-admin",
+		Role:      charm.RoleProvider,
+		Interface: "db",
+		Scope:     charm.ScopeGlobal,
+		Limit:     4,
+	}
+	relationUUID1 := s.addCharmRelation(c, charmUUID, relation1)
+
+	relation2 := charm.Relation{
+		Name:      "log",
+		Role:      charm.RoleRequirer,
+		Interface: "log",
+		Scope:     charm.ScopeGlobal,
+	}
+	relationUUID2 := s.addCharmRelation(c, charmUUID, relation2)
+
+	appName := "test-application"
+	appUUID := s.addApplication(c, charmUUID, appName)
+	endpointUUID1 := s.addApplicationEndpoint(c, appUUID, relationUUID1)
+	endpointUUID2 := s.addApplicationEndpoint(c, appUUID, relationUUID2)
+
+	offer1UUID := s.addOffer(c, "test-offer1", []string{endpointUUID1})
+	s.addOffer(c, "test-offer2", []string{endpointUUID2})
+
+	// Act - filter by both offer name and application name; the filter
+	// fields are ANDed so only test-offer1 should be returned.
 	results, err := s.state.GetOfferDetails(c.Context(), crossmodelrelation.OfferFilter{
-		OfferName: expected[0].OfferName,
-		// A charm with this metadata description does not exist,
-		// expect only 1 result.
+		OfferName:       "test-offer1",
+		ApplicationName: appName,
+	})
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(results, tc.HasLen, 1)
+	c.Check(results[0].OfferUUID, tc.Equals, offer1UUID.String())
+	c.Check(results[0].OfferName, tc.Equals, "test-offer1")
+	c.Check(results[0].ApplicationName, tc.Equals, appName)
+	c.Check(results[0].ApplicationDescription, tc.Equals, description)
+	c.Check(results[0].CharmLocator, tc.DeepEquals, domaincharm.CharmLocator{
+		Name:         charmReferenceName,
+		Revision:     42,
+		Source:       domaincharm.CharmHubSource,
+		Architecture: architecture.AMD64,
+	})
+	c.Check(results[0].Endpoints, tc.DeepEquals, []crossmodelrelation.OfferEndpoint{{
+		Name:      relation1.Name,
+		Role:      domaincharm.RoleProvider,
+		Interface: relation1.Interface,
+		Limit:     relation1.Limit,
+	}})
+}
+
+func (s *modelOfferSuite) TestGetOfferDetailsFilterMultipleNoResult(c *tc.C) {
+	// Arrange
+	s.setupForGetOfferDetails(c)
+
+	// Act - filters are ANDed, so a valid offer name combined with
+	// a non-matching description should return no results.
+	results, err := s.state.GetOfferDetails(c.Context(), crossmodelrelation.OfferFilter{
+		OfferName:              "test-offer",
 		ApplicationDescription: "failme",
 	})
 
 	// Assert
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(results, tc.HasLen, 0)
+}
+
+func (s *modelOfferSuite) TestGetOfferDetailsFilterMultiplePartialResult(c *tc.C) {
+	// Arrange
+	expected := s.setupForGetOfferDetails(c)
+
+	// Act - filters are ANDed; both offer name and description substring
+	// match the same offer so it is returned.
+	results, err := s.state.GetOfferDetails(c.Context(), crossmodelrelation.OfferFilter{
+		OfferName:              expected[0].OfferName,
+		ApplicationDescription: "app",
+	})
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.DeepEquals, expected)
 }
 
@@ -262,7 +341,7 @@ func (s *modelOfferSuite) TestGetOfferDetailsNoFilter(c *tc.C) {
 	results, err := s.state.GetOfferDetails(c.Context(), crossmodelrelation.OfferFilter{})
 
 	// Assert
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.DeepEquals, expected)
 }
 
@@ -298,7 +377,7 @@ func (s *modelOfferSuite) TestGetOfferDetailsFilterNoResult(c *tc.C) {
 	results, err := s.state.GetOfferDetails(c.Context(), crossmodelrelation.OfferFilter{})
 
 	// Assert
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.HasLen, 0)
 }
 
@@ -312,7 +391,21 @@ func (s *modelOfferSuite) TestGetOfferDetailsFilterOfferName(c *tc.C) {
 	})
 
 	// Assert
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(results, tc.DeepEquals, expected)
+}
+
+func (s *modelOfferSuite) TestGetOfferDetailsFilterPartialOfferName(c *tc.C) {
+	// Arrange
+	expected := s.setupForGetOfferDetails(c)
+
+	// Act - partial offer name should match with contains matching.
+	results, err := s.state.GetOfferDetails(c.Context(), crossmodelrelation.OfferFilter{
+		OfferName: "test",
+	})
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.DeepEquals, expected)
 }
 
@@ -326,22 +419,36 @@ func (s *modelOfferSuite) TestGetOfferDetailsFilterOfferUUID(c *tc.C) {
 	})
 
 	// Assert
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.DeepEquals, expected)
 }
 
-func (s *modelOfferSuite) TestGetOfferDetailsFilterPartialApplicationName(c *tc.C) {
+func (s *modelOfferSuite) TestGetOfferDetailsFilterExactApplicationName(c *tc.C) {
 	// Arrange
 	expected := s.setupForGetOfferDetails(c)
 
 	// Act
 	results, err := s.state.GetOfferDetails(c.Context(), crossmodelrelation.OfferFilter{
+		ApplicationName: "test-application",
+	})
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(results, tc.DeepEquals, expected)
+}
+
+func (s *modelOfferSuite) TestGetOfferDetailsFilterPartialApplicationNameNoResult(c *tc.C) {
+	// Arrange
+	s.setupForGetOfferDetails(c)
+
+	// Act - partial application name should not match with exact matching.
+	results, err := s.state.GetOfferDetails(c.Context(), crossmodelrelation.OfferFilter{
 		ApplicationName: "test",
 	})
 
 	// Assert
-	c.Assert(err, tc.IsNil)
-	c.Assert(results, tc.DeepEquals, expected)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(results, tc.HasLen, 0)
 }
 
 func (s *modelOfferSuite) TestGetOfferDetailsFilterPartialApplicationDescription(c *tc.C) {
@@ -354,7 +461,7 @@ func (s *modelOfferSuite) TestGetOfferDetailsFilterPartialApplicationDescription
 	})
 
 	// Assert
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.DeepEquals, expected)
 }
 
@@ -370,7 +477,7 @@ func (s *modelOfferSuite) TestGetOfferDetailsFilterEndpointName(c *tc.C) {
 	})
 
 	// Assert
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.DeepEquals, expected)
 }
 
@@ -386,7 +493,7 @@ func (s *modelOfferSuite) TestGetOfferDetailsFilterEndpointRole(c *tc.C) {
 	})
 
 	// Assert
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.DeepEquals, expected)
 }
 
@@ -403,7 +510,7 @@ func (s *modelOfferSuite) TestGetOfferDetailsFilterEndpointInterface(c *tc.C) {
 	})
 
 	// Assert
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Logf("%+v", results)
 	c.Assert(results, tc.DeepEquals, expected)
 }
@@ -422,7 +529,7 @@ func (s *modelOfferSuite) TestGetOfferDetailsFilterMultiEndpoint(c *tc.C) {
 	})
 
 	// Assert
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(results, tc.SameContents, expected)
 }
 
@@ -763,7 +870,7 @@ VALUES (?, '0')`, relUUID)
 	connections, err := s.state.GetOfferConnections(c.Context(), []string{offerUUID})
 
 	// Assert
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(connections, tc.HasLen, 1)
 	c.Check(connections[0].OfferUUID, tc.Equals, offerUUID)
 	c.Check(connections[0].SourceModelUUID, tc.Equals, consumerModelUUID)
@@ -777,12 +884,253 @@ VALUES (?, '0')`, relUUID)
 
 func (s *modelOfferSuite) TestGetOfferConnectionsNoConnections(c *tc.C) {
 	connections, err := s.state.GetOfferConnections(c.Context(), []string{internaluuid.MustNewUUID().String()})
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(connections, tc.HasLen, 0)
 }
 
 func (s *modelOfferSuite) TestGetOfferConnectionsEmptyUUIDs(c *tc.C) {
 	connections, err := s.state.GetOfferConnections(c.Context(), nil)
-	c.Assert(err, tc.IsNil)
+	c.Assert(err, tc.ErrorIsNil)
 	c.Assert(connections, tc.IsNil)
+}
+func (s *modelOfferSuite) TestValidateApplicationAndEndpointsForOffer(c *tc.C) {
+	// Arrange
+	charmUUID := s.addCharm(c)
+	s.addCharmMetadata(c, charmUUID, false)
+	relation := charm.Relation{
+		Name:      "db",
+		Role:      charm.RoleProvider,
+		Interface: "db",
+		Scope:     charm.ScopeGlobal,
+	}
+	relationUUID := s.addCharmRelation(c, charmUUID, relation)
+	relation2 := charm.Relation{
+		Name:      "log",
+		Role:      charm.RoleProvider,
+		Interface: "log",
+		Scope:     charm.ScopeGlobal,
+	}
+	relationUUID2 := s.addCharmRelation(c, charmUUID, relation2)
+
+	appName := "test-application"
+	appUUID := s.addApplication(c, charmUUID, appName)
+	s.addApplicationEndpoint(c, appUUID, relationUUID)
+	s.addApplicationEndpoint(c, appUUID, relationUUID2)
+
+	// Act
+	obtainedUUID, err := s.state.ValidateApplicationAndEndpointsForOffer(
+		c.Context(), appName, []string{relation.Name, relation2.Name},
+	)
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(obtainedUUID, tc.Equals, string(appUUID))
+}
+
+func (s *modelOfferSuite) TestValidateApplicationAndEndpointsForOfferSingleEndpoint(c *tc.C) {
+	// Arrange
+	charmUUID := s.addCharm(c)
+	s.addCharmMetadata(c, charmUUID, false)
+	relation := charm.Relation{
+		Name:      "db",
+		Role:      charm.RoleProvider,
+		Interface: "db",
+		Scope:     charm.ScopeGlobal,
+	}
+	relationUUID := s.addCharmRelation(c, charmUUID, relation)
+
+	appName := "test-application"
+	appUUID := s.addApplication(c, charmUUID, appName)
+	s.addApplicationEndpoint(c, appUUID, relationUUID)
+
+	// Act
+	obtainedUUID, err := s.state.ValidateApplicationAndEndpointsForOffer(
+		c.Context(), appName, []string{relation.Name},
+	)
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(obtainedUUID, tc.Equals, string(appUUID))
+}
+
+func (s *modelOfferSuite) TestValidateApplicationAndEndpointsForOfferApplicationNotFound(c *tc.C) {
+	// Act
+	_, err := s.state.ValidateApplicationAndEndpointsForOffer(
+		c.Context(), "no-such-app", []string{"db"},
+	)
+
+	// Assert
+	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationNotFound)
+}
+
+func (s *modelOfferSuite) TestValidateApplicationAndEndpointsForOfferDeadApplication(c *tc.C) {
+	// Arrange
+	charmUUID := s.addCharm(c)
+	s.addCharmMetadata(c, charmUUID, false)
+	relation := charm.Relation{
+		Name:      "db",
+		Role:      charm.RoleProvider,
+		Interface: "db",
+		Scope:     charm.ScopeGlobal,
+	}
+	relationUUID := s.addCharmRelation(c, charmUUID, relation)
+
+	appName := "test-application"
+	appUUID := s.addApplication(c, charmUUID, appName)
+	s.addApplicationEndpoint(c, appUUID, relationUUID)
+
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, "UPDATE application SET life_id = 2 WHERE uuid = ?", appUUID)
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Act
+	_, err = s.state.ValidateApplicationAndEndpointsForOffer(
+		c.Context(), appName, []string{relation.Name},
+	)
+
+	// Assert
+	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationIsDead)
+}
+
+func (s *modelOfferSuite) TestValidateApplicationAndEndpointsForOfferDyingApplication(c *tc.C) {
+	// Arrange
+	charmUUID := s.addCharm(c)
+	s.addCharmMetadata(c, charmUUID, false)
+	relation := charm.Relation{
+		Name:      "db",
+		Role:      charm.RoleProvider,
+		Interface: "db",
+		Scope:     charm.ScopeGlobal,
+	}
+	relationUUID := s.addCharmRelation(c, charmUUID, relation)
+
+	appName := "test-application"
+	appUUID := s.addApplication(c, charmUUID, appName)
+	s.addApplicationEndpoint(c, appUUID, relationUUID)
+
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, "UPDATE application SET life_id = 1 WHERE uuid = ?", appUUID)
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// Act — dying is not dead, should succeed.
+	obtainedUUID, err := s.state.ValidateApplicationAndEndpointsForOffer(
+		c.Context(), appName, []string{relation.Name},
+	)
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(obtainedUUID, tc.Equals, string(appUUID))
+}
+
+func (s *modelOfferSuite) TestValidateApplicationAndEndpointsForOfferEndpointNotFound(c *tc.C) {
+	// Arrange
+	charmUUID := s.addCharm(c)
+	s.addCharmMetadata(c, charmUUID, false)
+	relation := charm.Relation{
+		Name:      "db",
+		Role:      charm.RoleProvider,
+		Interface: "db",
+		Scope:     charm.ScopeGlobal,
+	}
+	relationUUID := s.addCharmRelation(c, charmUUID, relation)
+
+	appName := "test-application"
+	appUUID := s.addApplication(c, charmUUID, appName)
+	s.addApplicationEndpoint(c, appUUID, relationUUID)
+
+	// Act
+	_, err := s.state.ValidateApplicationAndEndpointsForOffer(
+		c.Context(), appName, []string{"no-such-endpoint"},
+	)
+
+	// Assert
+	c.Assert(err, tc.ErrorIs, applicationerrors.EndpointNotFound)
+}
+
+func (s *modelOfferSuite) TestValidateApplicationAndEndpointsForOfferMissingEndpoints(c *tc.C) {
+	// Arrange — request two endpoints but only one exists.
+	charmUUID := s.addCharm(c)
+	s.addCharmMetadata(c, charmUUID, false)
+	relation := charm.Relation{
+		Name:      "db",
+		Role:      charm.RoleProvider,
+		Interface: "db",
+		Scope:     charm.ScopeGlobal,
+	}
+	relationUUID := s.addCharmRelation(c, charmUUID, relation)
+
+	appName := "test-application"
+	appUUID := s.addApplication(c, charmUUID, appName)
+	s.addApplicationEndpoint(c, appUUID, relationUUID)
+
+	// Act
+	_, err := s.state.ValidateApplicationAndEndpointsForOffer(
+		c.Context(), appName, []string{relation.Name, "missing-one"},
+	)
+
+	// Assert
+	c.Assert(err, tc.ErrorIs, crossmodelrelationerrors.MissingEndpoints)
+}
+
+func (s *modelOfferSuite) TestValidateApplicationAndEndpointsForOfferContainerScope(c *tc.C) {
+	// Arrange — endpoint with container scope should be rejected.
+	charmUUID := s.addCharm(c)
+	s.addCharmMetadata(c, charmUUID, false)
+	relation := charm.Relation{
+		Name:      "juju-info",
+		Role:      charm.RoleProvider,
+		Interface: "juju-info",
+		Scope:     charm.ScopeContainer,
+	}
+	relationUUID := s.addCharmRelation(c, charmUUID, relation)
+
+	appName := "test-application"
+	appUUID := s.addApplication(c, charmUUID, appName)
+	s.addApplicationEndpoint(c, appUUID, relationUUID)
+
+	// Act
+	_, err := s.state.ValidateApplicationAndEndpointsForOffer(
+		c.Context(), appName, []string{relation.Name},
+	)
+
+	// Assert
+	c.Assert(err, tc.ErrorMatches, `can only offer endpoints with global scope, provided scope "container"`)
+}
+
+func (s *modelOfferSuite) TestValidateApplicationAndEndpointsForOfferMixedScope(c *tc.C) {
+	// Arrange — one global endpoint and one container endpoint.
+	// The container endpoint should cause failure.
+	charmUUID := s.addCharm(c)
+	s.addCharmMetadata(c, charmUUID, false)
+	globalRelation := charm.Relation{
+		Name:      "db",
+		Role:      charm.RoleProvider,
+		Interface: "db",
+		Scope:     charm.ScopeGlobal,
+	}
+	globalRelUUID := s.addCharmRelation(c, charmUUID, globalRelation)
+	containerRelation := charm.Relation{
+		Name:      "juju-info",
+		Role:      charm.RoleProvider,
+		Interface: "juju-info",
+		Scope:     charm.ScopeContainer,
+	}
+	containerRelUUID := s.addCharmRelation(c, charmUUID, containerRelation)
+
+	appName := "test-application"
+	appUUID := s.addApplication(c, charmUUID, appName)
+	s.addApplicationEndpoint(c, appUUID, globalRelUUID)
+	s.addApplicationEndpoint(c, appUUID, containerRelUUID)
+
+	// Act
+	_, err := s.state.ValidateApplicationAndEndpointsForOffer(
+		c.Context(), appName, []string{globalRelation.Name, containerRelation.Name},
+	)
+
+	// Assert
+	c.Assert(err, tc.ErrorMatches, `can only offer endpoints with global scope, provided scope "container"`)
 }
