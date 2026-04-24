@@ -116,7 +116,6 @@ GIT_TREE_STATE = $(if $(shell git -C $(PROJECT_DIR) rev-parse --is-inside-work-t
 #   compile for at the moment.
 define BUILD_AGENT_TARGETS
 	$(call tool_platform_paths,jujuc,$(filter-out windows%,${AGENT_PACKAGE_PLATFORMS})) \
-	$(call tool_platform_paths,jujud,$(filter linux%,${AGENT_PACKAGE_PLATFORMS})) \
 	$(call tool_platform_paths,containeragent,$(filter-out windows%,${AGENT_PACKAGE_PLATFORMS})) \
 	$(call tool_platform_paths,pebble,$(filter linux%,${AGENT_PACKAGE_PLATFORMS}))
 endef
@@ -153,7 +152,6 @@ endef
 define INSTALL_TARGETS
 	juju \
 	jujuc \
-	jujud \
 	containeragent \
 	juju-metadata
 endef
@@ -310,13 +308,6 @@ jujuc:
 ## jujuc: Install jujuc without updating dependencies
 	${run_go_install}
 
-.PHONY: jujud
-jujud: PACKAGE = github.com/juju/juju/cmd/jujud
-jujud:
-## jujud: Install jujud without updating dependencies
-	${run_go_install}
-	mv $(GO_INSTALL_PATH)/jujud $(GO_INSTALL_PATH)/jujud-junk
-
 .PHONY: jujud-controller
 jujud-controller: PACKAGE = github.com/juju/juju/cmd/jujud-controller
 jujud-controller: EXTRA_BUILD_TAGS += dqlite libsqlite3
@@ -370,15 +361,6 @@ ${BUILD_DIR}/%/bin/jujuc: PACKAGE = github.com/juju/juju/cmd/jujuc
 ${BUILD_DIR}/%/bin/jujuc: phony_explicit
 # build for jujuc
 	$(run_go_build)
-
-${BUILD_DIR}/%/bin/jujud: PACKAGE = github.com/juju/juju/cmd/jujud
-${BUILD_DIR}/%/bin/jujud: phony_explicit
-# build for jujud
-	$(run_go_build)
-	$(eval OS = $(word 1,$(subst _, ,$*)))
-	$(eval ARCH = $(word 2,$(subst _, ,$*)))
-	$(eval BBIN_DIR = ${BUILD_DIR}/${OS}_${ARCH}/bin)
-	mv ${BBIN_DIR}/jujud ${BBIN_DIR}/jujud-junk
 
 ${BUILD_DIR}/%/bin/jujud-controller: PACKAGE = github.com/juju/juju/cmd/jujud-controller
 ${BUILD_DIR}/%/bin/jujud-controller: EXTRA_BUILD_TAGS += dqlite libsqlite3
