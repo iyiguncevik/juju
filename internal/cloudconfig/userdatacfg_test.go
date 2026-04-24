@@ -33,13 +33,11 @@ import (
 	"github.com/juju/juju/core/paths"
 	"github.com/juju/juju/core/semversion"
 	charmtesting "github.com/juju/juju/domain/deployment/charm/testing"
-	"github.com/juju/juju/environs/bootstrap"
 	"github.com/juju/juju/environs/config"
 	"github.com/juju/juju/environs/imagemetadata"
 	"github.com/juju/juju/internal/cloudconfig"
 	"github.com/juju/juju/internal/cloudconfig/cloudinit"
 	"github.com/juju/juju/internal/cloudconfig/instancecfg"
-	"github.com/juju/juju/internal/featureflag"
 	"github.com/juju/juju/internal/testing"
 	"github.com/juju/juju/internal/tools"
 	jujutesting "github.com/juju/juju/juju/testing"
@@ -174,12 +172,6 @@ func (cfg *testInstanceConfig) setMachineID(id string) *testInstanceConfig {
 
 func (cfg *testInstanceConfig) setControllerCharm(path string) *testInstanceConfig {
 	cfg.Bootstrap.ControllerCharm = path
-	return cfg
-}
-
-func (cfg *testInstanceConfig) setControllerSnap(snapPath, assertPath string) *testInstanceConfig {
-	cfg.Bootstrap.ControllerSnapPath = snapPath
-	cfg.Bootstrap.ControllerSnapAssertPath = assertPath
 	return cfg
 }
 
@@ -688,77 +680,6 @@ echo -n %s | base64 -d > '/var/lib/juju/charms/controller.charm'
 	checkCloudInitWithContent(c, cfg, expectedScripts, "")
 }
 
-func (s *cloudinitSuite) TestCloudInitWithLocalControllerSnapOnly(c *tc.C) {
-	s.SetFeatureFlags(featureflag.ControllerSnap)
-
-	snapContent := []byte("fake snap binary content")
-	snapPath := filepath.Join(c.MkDir(), "juju-controller.snap")
-	err := os.WriteFile(snapPath, snapContent, 0644)
-	c.Assert(err, tc.ErrorIsNil)
-
-	cfg := makeBootstrapConfig(jammy, 0).setControllerSnap(snapPath, "")
-	base64Content := base64.StdEncoding.EncodeToString(snapContent)
-	snapFile := fmt.Sprintf("/var/lib/juju/snap/%s", bootstrap.ControllerSnapArchive)
-	expectedScripts := regexp.QuoteMeta(fmt.Sprintf(`
-install -D -m 644 /dev/null '%s'
-echo -n %s | base64 -d > '%[1]s'
-snap install --dangerous %[1]s`,
-		snapFile, base64Content,
-	))
-	checkCloudInitWithContent(c, cfg, expectedScripts, "")
-}
-
-func (s *cloudinitSuite) TestCloudInitWithLocalControllerSnapAndAssert(c *tc.C) {
-	s.SetFeatureFlags(featureflag.ControllerSnap)
-
-	snapContent := []byte("fake snap binary content")
-	assertContent := []byte("fake snap assert content")
-	dir := c.MkDir()
-	snapPath := filepath.Join(dir, "juju-controller.snap")
-	assertPath := filepath.Join(dir, "juju-controller.assert")
-	err := os.WriteFile(snapPath, snapContent, 0644)
-	c.Assert(err, tc.ErrorIsNil)
-	err = os.WriteFile(assertPath, assertContent, 0644)
-	c.Assert(err, tc.ErrorIsNil)
-
-	cfg := makeBootstrapConfig(jammy, 0).setControllerSnap(snapPath, assertPath)
-	base64Snap := base64.StdEncoding.EncodeToString(snapContent)
-	base64Assert := base64.StdEncoding.EncodeToString(assertContent)
-	snapFile := fmt.Sprintf("/var/lib/juju/snap/%s", bootstrap.ControllerSnapArchive)
-	assertFile := fmt.Sprintf("/var/lib/juju/snap/%s", bootstrap.ControllerSnapAssertArchive)
-	expectedScripts := regexp.QuoteMeta(fmt.Sprintf(`
-install -D -m 644 /dev/null '%s'
-echo -n %s | base64 -d > '%[1]s'
-install -D -m 644 /dev/null '%[3]s'
-echo -n %s | base64 -d > '%[3]s'
-snap ack %[3]s
-snap install %[1]s`,
-		snapFile, base64Snap, assertFile, base64Assert,
-	))
-	checkCloudInitWithContent(c, cfg, expectedScripts, "")
-}
-
-func (s *cloudinitSuite) TestCloudInitWithLocalControllerSnapFeatureFlagOff(c *tc.C) {
-	snapContent := []byte("fake snap binary content")
-	snapPath := filepath.Join(c.MkDir(), "juju-controller.snap")
-	err := os.WriteFile(snapPath, snapContent, 0644)
-	c.Assert(err, tc.ErrorIsNil)
-
-	// With the feature flag disabled, the snap must not appear in cloud-init.
-	cfg := makeBootstrapConfig(jammy, 0).setControllerSnap(snapPath, "")
-	envConfig := minimalModelConfig(c)
-	testConfig := cfg.maybeSetModelConfig(envConfig).render()
-	ci, err := cloudinit.New(testConfig.Base.OS)
-	c.Assert(err, tc.ErrorIsNil)
-	udata, err := cloudconfig.NewUserdataConfig(&testConfig, ci)
-	c.Assert(err, tc.ErrorIsNil)
-	err = udata.Configure()
-	c.Assert(err, tc.ErrorIsNil)
-	data, err := ci.RenderYAML()
-	c.Assert(err, tc.ErrorIsNil)
-	c.Check(string(data), tc.Not(tc.Contains), bootstrap.ControllerSnapArchive)
-}
-
 func (*cloudinitSuite) TestCloudInitConfigure(c *tc.C) {
 	for i, test := range cloudinitTests {
 		testConfig := test.cfg.maybeSetModelConfig(minimalModelConfig(c)).render()
@@ -1183,15 +1104,12 @@ func (*cloudinitSuite) createInstanceConfig(c *tc.C, environConfig *config.Confi
 	instanceConfig, err := instancecfg.NewInstanceConfig(testing.ControllerTag, machineId, machineNonce,
 		imagemetadata.ReleasedStream, jammy, apiInfo)
 	c.Assert(err, tc.ErrorIsNil)
-
-	err = instanceConfig.SetTools(tools.List{
+	instanceConfig.SetTools(tools.List{
 		&tools.Tools{
 			Version: semversion.MustParseBinary("2.3.4-ubuntu-amd64"),
 			URL:     "http://tools.testing.invalid/2.3.4-ubuntu-amd64.tgz",
 		},
 	})
-	c.Assert(err, tc.ErrorIsNil)
-
 	err = instancecfg.FinishInstanceConfig(instanceConfig, environConfig)
 	c.Assert(err, tc.ErrorIsNil)
 	return instanceConfig
