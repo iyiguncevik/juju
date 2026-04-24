@@ -5,6 +5,8 @@ package service
 
 import (
 	"context"
+	"maps"
+	"slices"
 
 	"github.com/juju/collections/transform"
 
@@ -59,6 +61,10 @@ type ModelOfferState interface {
 	// with the given UUIDs. An empty result is returned if no connections
 	// are found.
 	GetOfferConnections(ctx context.Context, offerUUIDs []string) ([]crossmodelrelation.OfferConnectionDetail, error)
+
+	// ValidateApplicationAndEndpointsForOffer checks that the application
+	// exists and is not dead, and that the endpoints are valid.
+	ValidateApplicationAndEndpointsForOffer(ctx context.Context, applicationName string, endpoints []string) (string, error)
 }
 
 // GetOfferUUID returns the uuid for the provided offer URL.
@@ -132,17 +138,26 @@ func (s *Service) CreateOffer(
 	if err != nil {
 		return errors.Capture(err)
 	}
-	createArgs := crossmodelrelation.MakeCreateOfferArgs(args, offerUUID)
 
 	// Check if the offer already exists.
 	existingOfferUUID, err := s.modelState.GetOfferUUID(ctx, args.OfferName)
 	if err != nil && !errors.Is(err, crossmodelrelationerrors.OfferNotFound) {
-		return errors.Errorf("create offer: %w", err)
+		return errors.Errorf("creating offer: %w", err)
 	} else if err == nil {
 		// The offer exists, this means that we have to return an error since we
 		// don't support updating offers.
-		return errors.Errorf("create offer: offer %q already exists with UUID %q",
+		return errors.Errorf("creating offer: offer %q already exists with UUID %q",
 			args.OfferName, existingOfferUUID).Add(crossmodelrelationerrors.OfferAlreadyExists)
+	}
+
+	endpoints := slices.Collect(maps.Keys(args.Endpoints))
+
+	// Verify the application exists and is not dead before creating the offer,
+	// and that the application endpoints are valid.
+	// Return a valid application UUID for offer creation.
+	applicationUUID, err := s.modelState.ValidateApplicationAndEndpointsForOffer(ctx, args.ApplicationName, endpoints)
+	if err != nil {
+		return errors.Errorf("creating offer %q: %w", args.OfferName, err)
 	}
 
 	// Verify the owner exists, has not been removed, and
@@ -150,13 +165,18 @@ func (s *Service) CreateOffer(
 	// update an offer, such an admin.
 	ownerUUID, err := s.controllerState.GetUserUUIDByName(ctx, args.OwnerName)
 	if err != nil {
-		return errors.Errorf("create offer: %w", err)
+		return errors.Errorf("creating offer: %w", err)
 	}
 
 	// The offer does not exist, create it.
-	err = s.modelState.CreateOffer(ctx, createArgs)
+	err = s.modelState.CreateOffer(ctx, crossmodelrelation.CreateOfferArgs{
+		UUID:            offerUUID,
+		ApplicationUUID: applicationUUID,
+		Endpoints:       endpoints,
+		OfferName:       args.OfferName,
+	})
 	if err != nil {
-		return errors.Errorf("create offer: %w", err)
+		return errors.Errorf("creating offer: %w", err)
 	}
 
 	err = s.controllerState.CreateOfferAccess(ctx, permissionUUID, offerUUID, ownerUUID)

@@ -5,6 +5,7 @@ package cloud
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/juju/collections/transform"
 	"github.com/juju/errors"
@@ -16,6 +17,7 @@ import (
 	"github.com/juju/juju/apiserver/facade"
 	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/core/credential"
+	coreerrors "github.com/juju/juju/core/errors"
 	corelogger "github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/permission"
 	"github.com/juju/juju/core/user"
@@ -563,6 +565,11 @@ func (api *CloudAPI) RevokeCredentialsCheckModels(ctx context.Context, args para
 		}
 
 		if err = api.credentialService.CheckAndRevokeCredential(ctx, credential.KeyFromTag(tag), arg.Force); err != nil {
+			if errors.Is(err, credentialerrors.NotFound) {
+				err = internalerrors.New(
+					fmt.Sprintf("credential %s not found", tag.String()),
+				).Add(coreerrors.NotFound)
+			}
 			results.Results[i].Error = apiservererrors.ServerError(err)
 		}
 	}
@@ -679,7 +686,9 @@ func (api *CloudAPI) AddCloud(ctx context.Context, cloudArgs params.AddCloudArgs
 	}
 
 	err = api.cloudService.CreateCloud(ctx, user.NameFromTag(api.apiUser), aCloud)
-	if err != nil {
+	if errors.Is(err, clouderrors.AlreadyExists) {
+		return internalerrors.New(fmt.Sprintf("cloud %q already exists", cloudArgs.Name)).Add(coreerrors.AlreadyExists)
+	} else if err != nil {
 		return errors.Annotatef(err, "creating cloud %q", cloudArgs.Name)
 	}
 	return nil

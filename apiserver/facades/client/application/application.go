@@ -37,7 +37,6 @@ import (
 	corelogger "github.com/juju/juju/core/logger"
 	"github.com/juju/juju/core/model"
 	"github.com/juju/juju/core/network"
-	"github.com/juju/juju/core/objectstore"
 	coreoffer "github.com/juju/juju/core/offer"
 	"github.com/juju/juju/core/os/ostype"
 	"github.com/juju/juju/core/permission"
@@ -89,8 +88,6 @@ type APIv19 struct {
 // APIBase implements the shared application interface and is the concrete
 // implementation of the api end point.
 type APIBase struct {
-	store objectstore.ObjectStore
-
 	authorizer facade.Authorizer
 	check      BlockChecker
 	repoDeploy DeployFromRepository
@@ -114,8 +111,8 @@ type APIBase struct {
 
 	leadershipReader leadership.Reader
 
-	caasBroker            CaasBrokerInterface
-	deployApplicationFunc DeployApplicationFunc
+	caasBroker                 CaasBrokerInterface
+	deployApplicationLocalRepo DeployApplicationLocalRepo
 
 	logger corelogger.Logger
 	clock  clock.Clock
@@ -143,7 +140,7 @@ func newFacadeBase(stdCtx context.Context, ctx facade.ModelContext) (*APIBase, e
 
 	charmhubHTTPClient, err := ctx.HTTPClient(corehttp.CharmhubPurpose)
 	if err != nil {
-		return nil, fmt.Errorf(
+		return nil, internalerrors.Errorf(
 			"getting charm hub http client: %w",
 			err,
 		)
@@ -167,6 +164,7 @@ func newFacadeBase(stdCtx context.Context, ctx facade.ModelContext) (*APIBase, e
 	repoDeploy := NewDeployFromRepositoryAPI(
 		modelInfo.Type,
 		applicationService,
+		storageService,
 		ctx.ObjectStore(),
 		makeDeployFromRepositoryValidator(stdCtx, validatorCfg),
 		repoLogger,
@@ -196,25 +194,19 @@ func newFacadeBase(stdCtx context.Context, ctx facade.ModelContext) (*APIBase, e
 		modelInfo.Type,
 		leadershipReader,
 		repoDeploy,
-		DeployApplication,
+		deployApplicationLocalRepo{
+			applicationService: applicationService,
+			clock:              ctx.Clock(),
+			logger:             ctx.Logger().Child("application"),
+			modelType:          modelInfo.Type,
+			store:              ctx.ObjectStore(),
+			storageService:     storageService,
+		},
 		nil,
-		ctx.ObjectStore(),
 		ctx.Logger().Child("application"),
 		ctx.Clock(),
 	)
 }
-
-// DeployApplicationFunc is a function that deploys an application.
-type DeployApplicationFunc = func(
-	context.Context,
-	model.ModelType,
-	ApplicationService,
-	StorageService,
-	objectstore.ObjectStore,
-	DeployApplicationParams,
-	corelogger.Logger,
-	clock.Clock,
-) error
 
 // NewAPIBase returns a new application API facade.
 func NewAPIBase(
@@ -226,9 +218,8 @@ func NewAPIBase(
 	modelType model.ModelType,
 	leadershipReader Leadership,
 	repoDeploy DeployFromRepository,
-	deployApplication DeployApplicationFunc,
+	deployApplicationLocalRepo DeployApplicationLocalRepo,
 	caasBroker CaasBrokerInterface,
-	store objectstore.ObjectStore,
 	logger corelogger.Logger,
 	clock clock.Clock,
 ) (*APIBase, error) {
@@ -241,16 +232,15 @@ func NewAPIBase(
 	}
 
 	return &APIBase{
-		authorizer:            authorizer,
-		repoDeploy:            repoDeploy,
-		check:                 blockChecker,
-		controllerUUID:        controllerUUID,
-		modelUUID:             modelUUID,
-		modelType:             modelType,
-		leadershipReader:      leadershipReader,
-		deployApplicationFunc: deployApplication,
-		caasBroker:            caasBroker,
-		store:                 store,
+		authorizer:                 authorizer,
+		repoDeploy:                 repoDeploy,
+		check:                      blockChecker,
+		controllerUUID:             controllerUUID,
+		modelUUID:                  modelUUID,
+		modelType:                  modelType,
+		leadershipReader:           leadershipReader,
+		deployApplicationLocalRepo: deployApplicationLocalRepo,
+		caasBroker:                 caasBroker,
 
 		externalControllerService: services.ExternalControllerService,
 		applicationService:        services.ApplicationService,
@@ -564,9 +554,7 @@ func (api *APIBase) deployApplication(
 		Resources:         args.Resources,
 		Force:             args.Force,
 	}
-	// TODO: replace model with model info/config services
-	err = api.deployApplicationFunc(ctx, api.modelType, api.applicationService,
-		api.storageService, api.store, appParams, api.logger, api.clock)
+	err = api.deployApplicationLocalRepo.Deploy(ctx, appParams)
 	return errors.Trace(err)
 }
 
@@ -1022,89 +1010,6 @@ func (api *APIBase) Unexpose(ctx context.Context, args params.ApplicationUnexpos
 		return apiservererrors.ServerError(err)
 	}
 	return nil
-}
-
-// AddUnits adds a given number of units to an application.
-func (api *APIBase) AddUnits(ctx context.Context, args params.AddApplicationUnits) (params.AddApplicationUnitsResults, error) {
-	if api.modelType == model.CAAS {
-		return params.AddApplicationUnitsResults{}, errors.NotSupportedf("adding units to a container-based model")
-	}
-
-	if err := api.checkCanWrite(ctx); err != nil {
-		return params.AddApplicationUnitsResults{}, errors.Trace(err)
-	}
-	if err := api.check.ChangeAllowed(ctx); err != nil {
-		return params.AddApplicationUnitsResults{}, errors.Trace(err)
-	}
-
-	locator, err := api.getCharmLocatorByApplicationName(ctx, args.ApplicationName)
-	if err != nil {
-		return params.AddApplicationUnitsResults{}, errors.Trace(err)
-	}
-	charm, err := api.getCharm(ctx, locator)
-	if err != nil {
-		return params.AddApplicationUnitsResults{}, errors.Trace(err)
-	}
-
-	units, err := api.addApplicationUnits(ctx, args, charm.Meta())
-	if err != nil {
-		return params.AddApplicationUnitsResults{}, errors.Trace(err)
-	}
-	return params.AddApplicationUnitsResults{
-		Units: transform.Slice(units, func(unit coreunit.Name) string { return unit.String() }),
-	}, nil
-}
-
-// addApplicationUnits adds a given number of units to an application.
-func (api *APIBase) addApplicationUnits(
-	ctx context.Context, args params.AddApplicationUnits, charmMeta *charm.Meta,
-) ([]coreunit.Name, error) {
-	if args.NumUnits < 1 {
-		return nil, errors.New("must add at least one unit")
-	}
-
-	assignUnits := true
-	if api.modelType != model.IAAS {
-		// In a CAAS model, there are no machines for
-		// units to be assigned to.
-		assignUnits = false
-		if len(args.AttachStorage) > 0 {
-			return nil, errors.Errorf(
-				"AttachStorage may not be specified for %s models",
-				api.modelType,
-			)
-		}
-		if len(args.Placement) > 1 {
-			return nil, errors.Errorf(
-				"only 1 placement directive is supported for %s models, got %d",
-				api.modelType,
-				len(args.Placement),
-			)
-		}
-	}
-
-	// Parse storage tags in AttachStorage.
-	if len(args.AttachStorage) > 0 && args.NumUnits != 1 {
-		return nil, errors.Errorf("AttachStorage is non-empty, but NumUnits is %d", args.NumUnits)
-	}
-	attachStorage := make([]names.StorageTag, len(args.AttachStorage))
-	for i, tagString := range args.AttachStorage {
-		tag, err := names.ParseStorageTag(tagString)
-		if err != nil {
-			return nil, errors.Trace(err)
-		}
-		attachStorage[i] = tag
-	}
-
-	return api.addUnits(
-		ctx,
-		args.ApplicationName,
-		args.NumUnits,
-		args.Placement,
-		attachStorage,
-		assignUnits,
-		charmMeta,
-	)
 }
 
 // DestroyUnit removes a given set of application units.

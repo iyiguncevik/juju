@@ -87,7 +87,7 @@ func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeNormalSuccess(c *
 	var lifeID int
 	err = row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, 1)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
 }
 
 func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeNormalSuccessWithAliveUnitsCascadedStorage(c *tc.C) {
@@ -147,13 +147,13 @@ VALUES ('storage-attachment-uuid', 'instance-uuid', ?, 0)`
 	var lifeID int
 	err = row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, 1)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
 
 	// Storage instance should be "dying".
 	row = db.QueryRowContext(ctx, "SELECT life_id FROM storage_instance WHERE uuid = 'instance-uuid'")
 	err = row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, 1)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
 }
 
 func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeNormalSuccessWithAliveAndDyingUnits(c *tc.C) {
@@ -344,7 +344,7 @@ func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeDyingSuccess(c *t
 	var lifeID int
 	err = row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, 1)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
 }
 
 func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeRetryReturnsDyingArtifacts(c *tc.C) {
@@ -454,7 +454,7 @@ VALUES ('storage-attachment-uuid', 'instance-uuid', ?, 0)`, allUnitUUIDs[0])
 func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeOfferConnections(c *tc.C) {
 	svc := s.setupApplicationService(c)
 	appUUID := s.createIAASApplication(c, svc, "some-app")
-	offerUUID := s.createOfferForApplication(c, "some-app", "some-offer")
+	offerUUID := s.createOfferForApplication(c, appUUID, "some-offer")
 	s.createRemoteApplicationConsumer(c, "some-remote-app", offerUUID)
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
@@ -1229,8 +1229,8 @@ func (s *applicationSuite) TestDeleteApplicationWithSharedObjectstoreResource(c 
 func (s *applicationSuite) TestDeleteApplicationWithOffers(c *tc.C) {
 	svc := s.setupApplicationService(c)
 	appUUID := s.createIAASApplication(c, svc, "some-app")
-	offerUUID1 := s.createOfferForApplication(c, "some-app", "some-offer")
-	offerUUID2 := s.createOfferForApplication(c, "some-app", "some-other-offer")
+	offerUUID1 := s.createOfferForApplication(c, appUUID, "some-offer")
+	offerUUID2 := s.createOfferForApplication(c, appUUID, "some-other-offer")
 
 	s.advanceApplicationLife(c, appUUID, life.Dead)
 
@@ -1281,7 +1281,7 @@ func (s *applicationSuite) checkApplicationDyingState(c *tc.C, appUUID coreappli
 	var lifeID int
 	err := row.Scan(&lifeID)
 	c.Assert(err, tc.ErrorIsNil)
-	c.Check(lifeID, tc.Equals, 1)
+	c.Check(lifeID, tc.Equals, int(life.Dying))
 }
 
 func (s *applicationSuite) checkNoApplicationSequence(c *tc.C, appName string) {

@@ -39,6 +39,11 @@ type uuid struct {
 	UUID string `db:"uuid"`
 }
 
+type uuidAndLife struct {
+	UUID string `db:"uuid"`
+	Life int    `db:"life_id"`
+}
+
 type applicationUUIDAndCharmSource struct {
 	UUID        string            `db:"uuid"`
 	CharmSource charm.CharmSource `db:"name"`

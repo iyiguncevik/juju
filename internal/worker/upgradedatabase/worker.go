@@ -435,6 +435,7 @@ func (w *upgradeDBWorker) abort(ctx context.Context, upgradeUUID domainupgrade.U
 
 // abort marks the upgrade as failed and returns dependency.ErrBounce.
 func (w *upgradeDBWorker) abortWithError(ctx context.Context, upgradeUUID domainupgrade.UUID, err error) error {
+	w.logger.Errorf(ctx, "aborting upgrade %s: %v", upgradeUUID, err)
 	// Set the upgrade as failed, so that the next time the agent
 	// restarts, it will try again.
 	if err := w.upgradeService.SetDBUpgradeFailed(ctx, upgradeUUID); err != nil {
