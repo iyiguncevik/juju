@@ -15,10 +15,14 @@ import (
 	applicationerrors "github.com/juju/juju/domain/application/errors"
 	"github.com/juju/juju/domain/crossmodelrelation"
 	crossmodelrelationerrors "github.com/juju/juju/domain/crossmodelrelation/errors"
+	domainlife "github.com/juju/juju/domain/life"
 	"github.com/juju/juju/internal/errors"
 )
 
-// CreateOffer creates an offer and links the endpoints to it.
+// CreateOffer creates an offer and links the endpoints to it. Returns an error
+// if the offer already exists, if the application does not exist or is dead, if
+// any of the endpoints do not exist or are not valid for offering, or if there
+// was an error creating the offer.
 func (st *State) CreateOffer(
 	ctx context.Context,
 	args crossmodelrelation.CreateOfferArgs,
@@ -26,6 +30,15 @@ func (st *State) CreateOffer(
 	db, err := st.DB(ctx)
 	if err != nil {
 		return errors.Capture(err)
+	}
+
+	applicationLifeStmt, err := st.Prepare(`
+SELECT life_id AS &lifeID.life_id
+FROM   application
+WHERE  uuid = $uuid.uuid
+`, uuid{}, lifeID{})
+	if err != nil {
+		return errors.Errorf("preparing application life query: %w", err)
 	}
 
 	createOfferStmt, err := st.Prepare(`
@@ -36,20 +49,23 @@ INSERT INTO offer (*) VALUES ($nameAndUUID.*)`, nameAndUUID{})
 	offer := nameAndUUID{Name: args.OfferName, UUID: args.UUID.String()}
 
 	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		applicationUUID, err := st.getApplicationUUID(ctx, tx, args.ApplicationName)
-		if err != nil {
+		var life lifeID
+		err := tx.Query(ctx, applicationLifeStmt, uuid{UUID: args.ApplicationUUID}).Get(&life)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return applicationerrors.ApplicationNotFound
+		} else if err != nil {
 			return errors.Capture(err)
 		}
 
-		if err := st.checkApplicationNotDead(ctx, tx, applicationUUID); err != nil {
-			return errors.Capture(err)
+		if life.Life == int(domainlife.Dead) {
+			return applicationerrors.ApplicationIsDead
 		}
 
 		if err := tx.Query(ctx, createOfferStmt, offer).Run(); err != nil {
 			return errors.Errorf("inserting offer row for %q: %w", args.OfferName, err)
 		}
 
-		if err := st.createOfferEndpoints(ctx, tx, args.UUID.String(), applicationUUID, args.Endpoints); err != nil {
+		if err := st.createOfferEndpoints(ctx, tx, args.UUID.String(), args.ApplicationUUID, args.Endpoints); err != nil {
 			return errors.Errorf("offer %q: %w", args.OfferName, err)
 		}
 
@@ -57,6 +73,71 @@ INSERT INTO offer (*) VALUES ($nameAndUUID.*)`, nameAndUUID{})
 	})
 
 	return errors.Capture(err)
+}
+
+// ValidateApplicationAndEndpointsForOffer checks that the application exists
+// and is not dead, and that the endpoints are valid.
+func (st *State) ValidateApplicationAndEndpointsForOffer(
+	ctx context.Context,
+	applicationName string,
+	endpoints []string,
+) (string, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	type uuids []string
+
+	// Check that there is a valid application with no endpoints with container
+	// types. scope_id is container scope, which is not allowed to be offered.
+	stmt, err := st.Prepare(`
+SELECT COUNT(*) AS &countResult.count
+FROM   application_endpoint AS ae
+JOIN   charm_relation AS cr ON ae.charm_relation_uuid = cr.uuid
+AND    ae.uuid IN ($uuids[:])
+AND    cr.scope_id == 1
+`, uuids{}, countResult{})
+	if err != nil {
+		return "", errors.Errorf("preparing application and endpoint validation query: %w", err)
+	}
+
+	var (
+		count           countResult
+		applicationUUID string
+	)
+	err = db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		var applicationLife int
+		var err error
+		applicationUUID, applicationLife, err = st.getApplicationUUIDAndLife(ctx, tx, applicationName)
+		if err != nil {
+			return errors.Capture(err)
+		} else if applicationLife == int(domainlife.Dead) {
+			return applicationerrors.ApplicationIsDead
+		}
+
+		endpointUUIDs, err := st.getEndpointUUIDs(ctx, tx, applicationUUID, endpoints)
+		if err != nil {
+			return errors.Capture(err)
+		}
+
+		err = tx.Query(ctx, stmt, uuids(endpointUUIDs)).Get(&count)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			// No endpoints with container types, validation successful.
+			return nil
+		} else if err != nil {
+			return errors.Errorf("validating application %q and endpoints: %w", applicationName, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", errors.Capture(err)
+	}
+
+	if count.Count > 0 {
+		return "", errors.Errorf(`can only offer endpoints with global scope, provided scope "container"`)
+	}
+	return applicationUUID, nil
 }
 
 // DeleteFailedOffer deletes the provided offer, when adding permissions
@@ -355,23 +436,23 @@ func encodeOfferFilter(in crossmodelrelation.OfferFilter) ([]offerFilter, error)
 	return result, nil
 }
 
-func (st *State) getApplicationUUID(ctx context.Context, tx *sqlair.TX, appName string) (string, error) {
+func (st *State) getApplicationUUIDAndLife(ctx context.Context, tx *sqlair.TX, appName string) (string, int, error) {
 	stmt, err := st.Prepare(`
-SELECT uuid AS &uuid.uuid
+SELECT &uuidAndLife.*
 FROM   application
 WHERE  name = $name.name
-`, name{}, uuid{})
+`, name{}, uuidAndLife{})
 	if err != nil {
-		return "", errors.Errorf("preparing application uuid query: %w", err)
+		return "", -1, errors.Errorf("preparing application uuid and life query: %w", err)
 	}
 
-	var result uuid
+	var result uuidAndLife
 	if err := tx.Query(ctx, stmt, name{Name: appName}).Get(&result); errors.Is(err, sqlair.ErrNoRows) {
-		return "", applicationerrors.ApplicationNotFound
+		return "", -1, applicationerrors.ApplicationNotFound
 	} else if err != nil {
-		return "", errors.Capture(err)
+		return "", -1, errors.Capture(err)
 	}
-	return result.UUID, nil
+	return result.UUID, result.Life, nil
 }
 
 func (st *State) getApplicationUUIDs(ctx context.Context, tx *sqlair.TX, appNames []string) (map[string]string, error) {

@@ -2144,6 +2144,45 @@ func (c *MockModelStateUpdateRemoteSecretRevisionCall) DoAndReturn(f func(contex
 	return c
 }
 
+// ValidateApplicationAndEndpointsForOffer mocks base method.
+func (m *MockModelState) ValidateApplicationAndEndpointsForOffer(arg0 context.Context, arg1 string, arg2 []string) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ValidateApplicationAndEndpointsForOffer", arg0, arg1, arg2)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// ValidateApplicationAndEndpointsForOffer indicates an expected call of ValidateApplicationAndEndpointsForOffer.
+func (mr *MockModelStateMockRecorder) ValidateApplicationAndEndpointsForOffer(arg0, arg1, arg2 any) *MockModelStateValidateApplicationAndEndpointsForOfferCall {
+	mr.mock.ctrl.T.Helper()
+	call := mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ValidateApplicationAndEndpointsForOffer", reflect.TypeOf((*MockModelState)(nil).ValidateApplicationAndEndpointsForOffer), arg0, arg1, arg2)
+	return &MockModelStateValidateApplicationAndEndpointsForOfferCall{Call: call}
+}
+
+// MockModelStateValidateApplicationAndEndpointsForOfferCall wrap *gomock.Call
+type MockModelStateValidateApplicationAndEndpointsForOfferCall struct {
+	*gomock.Call
+}
+
+// Return rewrite *gomock.Call.Return
+func (c *MockModelStateValidateApplicationAndEndpointsForOfferCall) Return(arg0 string, arg1 error) *MockModelStateValidateApplicationAndEndpointsForOfferCall {
+	c.Call = c.Call.Return(arg0, arg1)
+	return c
+}
+
+// Do rewrite *gomock.Call.Do
+func (c *MockModelStateValidateApplicationAndEndpointsForOfferCall) Do(f func(context.Context, string, []string) (string, error)) *MockModelStateValidateApplicationAndEndpointsForOfferCall {
+	c.Call = c.Call.Do(f)
+	return c
+}
+
+// DoAndReturn rewrite *gomock.Call.DoAndReturn
+func (c *MockModelStateValidateApplicationAndEndpointsForOfferCall) DoAndReturn(f func(context.Context, string, []string) (string, error)) *MockModelStateValidateApplicationAndEndpointsForOfferCall {
+	c.Call = c.Call.DoAndReturn(f)
+	return c
+}
+
 // MockModelMigrationState is a mock of ModelMigrationState interface.
 type MockModelMigrationState struct {
 	ctrl     *gomock.Controller

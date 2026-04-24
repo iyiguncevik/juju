@@ -454,7 +454,7 @@ VALUES ('storage-attachment-uuid', 'instance-uuid', ?, 0)`, allUnitUUIDs[0])
 func (s *applicationSuite) TestEnsureApplicationNotAliveCascadeOfferConnections(c *tc.C) {
 	svc := s.setupApplicationService(c)
 	appUUID := s.createIAASApplication(c, svc, "some-app")
-	offerUUID := s.createOfferForApplication(c, "some-app", "some-offer")
+	offerUUID := s.createOfferForApplication(c, appUUID, "some-offer")
 	s.createRemoteApplicationConsumer(c, "some-remote-app", offerUUID)
 
 	st := NewState(s.TxnRunnerFactory(), loggertesting.WrapCheckLog(c))
@@ -1229,8 +1229,8 @@ func (s *applicationSuite) TestDeleteApplicationWithSharedObjectstoreResource(c 
 func (s *applicationSuite) TestDeleteApplicationWithOffers(c *tc.C) {
 	svc := s.setupApplicationService(c)
 	appUUID := s.createIAASApplication(c, svc, "some-app")
-	offerUUID1 := s.createOfferForApplication(c, "some-app", "some-offer")
-	offerUUID2 := s.createOfferForApplication(c, "some-app", "some-other-offer")
+	offerUUID1 := s.createOfferForApplication(c, appUUID, "some-offer")
+	offerUUID2 := s.createOfferForApplication(c, appUUID, "some-other-offer")
 
 	s.advanceApplicationLife(c, appUUID, life.Dead)
 

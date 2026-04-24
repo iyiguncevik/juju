@@ -269,7 +269,7 @@ func (st *State) GetApplicationUUIDByName(ctx context.Context, name string) (str
 
 	var id string
 	if err := db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
-		id, err = st.getApplicationUUID(ctx, tx, name)
+		id, _, err = st.getApplicationUUIDAndLife(ctx, tx, name)
 		return err
 	}); err != nil {
 		return "", errors.Capture(err)
