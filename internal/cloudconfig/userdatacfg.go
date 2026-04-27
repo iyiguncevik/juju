@@ -628,7 +628,6 @@ func (w *userdataConfig) addControllerSnapStoreInstall() error {
 	w.conf.AddRunCmd(cloudinit.LogProgressCmd(
 		"Downloading controller snap %q from channel %q", packageName, channel,
 	))
-	w.conf.AddPackage("xdelta3") // snap download --delta wants xdelta3 to be installed
 	w.conf.AddRunCmd(fmt.Sprintf(
 		"(cd %s && snap download %s --channel=%s --basename=%s)",
 		shquote(snapDir), shquote(packageName), shquote(channel), shquote(packageName),
