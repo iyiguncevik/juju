@@ -43,7 +43,6 @@ const (
 	// controller bootstrap wiring.
 	// TODO(ice): switch to the dedicated controller snap name.
 	ControllerSnapPackageName = "juju"
-
 )
 
 // PrepareParams contains the parameters for preparing a controller Environ
