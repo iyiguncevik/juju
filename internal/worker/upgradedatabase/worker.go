@@ -422,7 +422,7 @@ func (w *upgradeDBWorker) runUpgrade(ctx context.Context, upgradeUUID domainupgr
 				return dependency.ErrUninstall
 			}
 
-			w.logger.Errorf(ctx, "database upgrade failed, check logs for details")
+			w.logger.Errorf(ctx, "database upgrade failed: %v", err)
 
 			return w.abort(ctx, upgradeUUID, err)
 		}
