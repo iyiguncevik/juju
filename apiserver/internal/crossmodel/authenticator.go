@@ -18,6 +18,7 @@ import (
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/core/logger"
 	internalerrors "github.com/juju/juju/internal/errors"
+	"github.com/juju/juju/internal/wrench"
 )
 
 // ErrInvalidMacaroon is returned when a macaroon is invalid.
@@ -76,6 +77,20 @@ func (a *Authenticator) checkMacaroons(
 	username, ok := declared.UserName()
 	if !ok {
 		return nil, apiservererrors.ErrPerm
+	}
+
+	if wrench.IsActive("crossmodelrelations", "discharge-required") {
+		a.logger.Debugf(ctx, "wrench active, returning discharge required error for %q", op.Entity)
+		m, err := a.bakery.CreateDischargeMacaroon(ctx, username, requiredValues, declared, op, version)
+		if err != nil {
+			a.logger.Errorf(ctx, "cannot create cross model macaroon: %v", err)
+			return nil, internalerrors.Errorf("creating discharge macaroon: %w", err)
+		}
+		return nil, &apiservererrors.DischargeRequiredError{
+			Cause:          ErrInvalidMacaroon,
+			Macaroon:       m,
+			LegacyMacaroon: m.M(),
+		}
 	}
 
 	conditions, err := a.bakery.AllowedAuth(ctx, op, mac)
