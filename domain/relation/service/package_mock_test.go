@@ -203,6 +203,7 @@ type MockStateMockRecorder struct {
 	getRelationUnitUUIDsByEndpointUUIDExpects          []*gomock.Call2_2[context.Context, string, []string, error]
 	getRelationUnitsChangesExpects                     []*gomock.Call3_2[context.Context, relation.UUID, application.UUID, relation0.RelationUnitChange, error]
 	getRelationsStatusForUnitExpects                   []*gomock.Call2_2[context.Context, unit.UUID, []relation0.RelationUnitStatusResult, error]
+	getSuspendedRelationsForApplicationExpects         []*gomock.Call2_2[context.Context, string, []string, error]
 	getUnitSettingsForUnitsExpects                     []*gomock.Call3_2[context.Context, string, []string, []relation0.UnitSettings, error]
 	getWatcherRelationUnitsDataExpects                 []*gomock.Call3_2[context.Context, relation.UUID, application.UUID, internal.WatcherRelationUnitsData, error]
 	inferRelationUUIDByEndpointsExpects                []*gomock.Call3_2[context.Context, relation0.CandidateEndpointIdentifier, relation0.CandidateEndpointIdentifier, relation.UUID, error]
@@ -768,6 +769,24 @@ func (mr *MockStateMockRecorder) GetRelationsStatusForUnit(ctx, unitUUID any) *M
 
 // MockStateGetRelationsStatusForUnitCall is the typed call wrapper for GetRelationsStatusForUnit.
 type MockStateGetRelationsStatusForUnitCall = gomock.Call2_2[context.Context, unit.UUID, []relation0.RelationUnitStatusResult, error]
+
+// GetSuspendedRelationsForApplication mocks base method.
+func (m *MockState) GetSuspendedRelationsForApplication(ctx context.Context, applicationID string) ([]string, error) {
+	m.ctrl.T.Helper()
+	return gomock.Dispatch2_2(&m.recorder.getSuspendedRelationsForApplicationExpects, m.ctrl, m, "GetSuspendedRelationsForApplication", ctx, applicationID)
+}
+
+// GetSuspendedRelationsForApplication indicates an expected call of GetSuspendedRelationsForApplication.
+func (mr *MockStateMockRecorder) GetSuspendedRelationsForApplication(ctx, applicationID any) *MockStateGetSuspendedRelationsForApplicationCall {
+	mr.mock.ctrl.T.Helper()
+	call := gomock.NewCall2_2[context.Context, string, []string, error](mr.mock.ctrl.T, mr.mock, "GetSuspendedRelationsForApplication", gomock.EnsureMatcher(ctx), gomock.EnsureMatcher(applicationID))
+	mr.getSuspendedRelationsForApplicationExpects = append(mr.getSuspendedRelationsForApplicationExpects, call)
+	mr.mock.ctrl.Track(call.Call)
+	return call
+}
+
+// MockStateGetSuspendedRelationsForApplicationCall is the typed call wrapper for GetSuspendedRelationsForApplication.
+type MockStateGetSuspendedRelationsForApplicationCall = gomock.Call2_2[context.Context, string, []string, error]
 
 // GetUnitSettingsForUnits mocks base method.
 func (m *MockState) GetUnitSettingsForUnits(ctx context.Context, relationUUID string, unitNames []string) ([]relation0.UnitSettings, error) {

@@ -326,6 +326,7 @@ type MockCrossModelServiceMockRecorder struct {
 	getRelationUnitUUIDExpects                             []*gomock.Call3_2[context.Context, relation.UUID, unit.Name, relation.UnitUUID, error]
 	getRelationUnitsExpects                                []*gomock.Call3_2[context.Context, relation.UUID, application.UUID, relation0.RelationUnitChange, error]
 	getRemoteApplicationOfferersExpects                    []*gomock.Call1_2[context.Context, []crossmodelrelation.RemoteApplicationOfferer, error]
+	getSuspendedRelationsForApplicationExpects             []*gomock.Call2_2[context.Context, application.UUID, []relation.UUID, error]
 	leaveScopeExpects                                      []*gomock.Call2_1[context.Context, relation.UnitUUID, error]
 	removeRelationWithRemoteOffererExpects                 []*gomock.Call4_2[context.Context, relation.UUID, bool, time.Duration, removal.UUID, error]
 	removeRemoteApplicationOffererByApplicationUUIDExpects []*gomock.Call4_2[context.Context, application.UUID, bool, time.Duration, removal.UUID, error]
@@ -459,6 +460,24 @@ func (mr *MockCrossModelServiceMockRecorder) GetRemoteApplicationOfferers(arg0 a
 
 // MockCrossModelServiceGetRemoteApplicationOfferersCall is the typed call wrapper for GetRemoteApplicationOfferers.
 type MockCrossModelServiceGetRemoteApplicationOfferersCall = gomock.Call1_2[context.Context, []crossmodelrelation.RemoteApplicationOfferer, error]
+
+// GetSuspendedRelationsForApplication mocks base method.
+func (m *MockCrossModelService) GetSuspendedRelationsForApplication(arg0 context.Context, arg1 application.UUID) ([]relation.UUID, error) {
+	m.ctrl.T.Helper()
+	return gomock.Dispatch2_2(&m.recorder.getSuspendedRelationsForApplicationExpects, m.ctrl, m, "GetSuspendedRelationsForApplication", arg0, arg1)
+}
+
+// GetSuspendedRelationsForApplication indicates an expected call of GetSuspendedRelationsForApplication.
+func (mr *MockCrossModelServiceMockRecorder) GetSuspendedRelationsForApplication(arg0, arg1 any) *MockCrossModelServiceGetSuspendedRelationsForApplicationCall {
+	mr.mock.ctrl.T.Helper()
+	call := gomock.NewCall2_2[context.Context, application.UUID, []relation.UUID, error](mr.mock.ctrl.T, mr.mock, "GetSuspendedRelationsForApplication", gomock.EnsureMatcher(arg0), gomock.EnsureMatcher(arg1))
+	mr.getSuspendedRelationsForApplicationExpects = append(mr.getSuspendedRelationsForApplicationExpects, call)
+	mr.mock.ctrl.Track(call.Call)
+	return call
+}
+
+// MockCrossModelServiceGetSuspendedRelationsForApplicationCall is the typed call wrapper for GetSuspendedRelationsForApplication.
+type MockCrossModelServiceGetSuspendedRelationsForApplicationCall = gomock.Call2_2[context.Context, application.UUID, []relation.UUID, error]
 
 // LeaveScope mocks base method.
 func (m *MockCrossModelService) LeaveScope(ctx context.Context, relationUnitUUID relation.UnitUUID) error {
@@ -732,6 +751,7 @@ type MockRelationServiceMockRecorder struct {
 	getRelationDetailsExpects                              []*gomock.Call2_2[context.Context, relation.UUID, relation0.RelationDetails, error]
 	getRelationUnitUUIDExpects                             []*gomock.Call3_2[context.Context, relation.UUID, unit.Name, relation.UnitUUID, error]
 	getRelationUnitsExpects                                []*gomock.Call3_2[context.Context, relation.UUID, application.UUID, relation0.RelationUnitChange, error]
+	getSuspendedRelationsForApplicationExpects             []*gomock.Call2_2[context.Context, application.UUID, []relation.UUID, error]
 	setRelationRemoteApplicationAndUnitSettingsExpects     []*gomock.Call5_1[context.Context, application.UUID, relation.UUID, map[string]string, map[unit.Name]map[string]string, error]
 	setRemoteRelationSuspendedStateExpects                 []*gomock.Call4_1[context.Context, relation.UUID, bool, string, error]
 	watchRelationUnitsExpects                              []*gomock.Call3_2[context.Context, relation.UUID, application.UUID, watcher0.NotifyWatcher, error]
@@ -803,6 +823,24 @@ func (mr *MockRelationServiceMockRecorder) GetRelationUnits(arg0, arg1, arg2 any
 
 // MockRelationServiceGetRelationUnitsCall is the typed call wrapper for GetRelationUnits.
 type MockRelationServiceGetRelationUnitsCall = gomock.Call3_2[context.Context, relation.UUID, application.UUID, relation0.RelationUnitChange, error]
+
+// GetSuspendedRelationsForApplication mocks base method.
+func (m *MockRelationService) GetSuspendedRelationsForApplication(arg0 context.Context, arg1 application.UUID) ([]relation.UUID, error) {
+	m.ctrl.T.Helper()
+	return gomock.Dispatch2_2(&m.recorder.getSuspendedRelationsForApplicationExpects, m.ctrl, m, "GetSuspendedRelationsForApplication", arg0, arg1)
+}
+
+// GetSuspendedRelationsForApplication indicates an expected call of GetSuspendedRelationsForApplication.
+func (mr *MockRelationServiceMockRecorder) GetSuspendedRelationsForApplication(arg0, arg1 any) *MockRelationServiceGetSuspendedRelationsForApplicationCall {
+	mr.mock.ctrl.T.Helper()
+	call := gomock.NewCall2_2[context.Context, application.UUID, []relation.UUID, error](mr.mock.ctrl.T, mr.mock, "GetSuspendedRelationsForApplication", gomock.EnsureMatcher(arg0), gomock.EnsureMatcher(arg1))
+	mr.getSuspendedRelationsForApplicationExpects = append(mr.getSuspendedRelationsForApplicationExpects, call)
+	mr.mock.ctrl.Track(call.Call)
+	return call
+}
+
+// MockRelationServiceGetSuspendedRelationsForApplicationCall is the typed call wrapper for GetSuspendedRelationsForApplication.
+type MockRelationServiceGetSuspendedRelationsForApplicationCall = gomock.Call2_2[context.Context, application.UUID, []relation.UUID, error]
 
 // SetRelationRemoteApplicationAndUnitSettings mocks base method.
 func (m *MockRelationService) SetRelationRemoteApplicationAndUnitSettings(ctx context.Context, applicationUUID application.UUID, relationUUID relation.UUID, applicationSettings map[string]string, unitSettings map[unit.Name]map[string]string) error {

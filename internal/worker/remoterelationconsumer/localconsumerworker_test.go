@@ -61,6 +61,7 @@ type localConsumerWorkerSuite struct {
 	macaroon                *macaroon.Macaroon
 
 	relationLifeChanges          chan []string
+	offerStatusChanges           chan []watcher.OfferStatusChange
 	secretRevisionChanges        chan []watcher.SecretRevisionChange
 	secretRevisionWatcherStarted chan struct{}
 
@@ -80,6 +81,7 @@ func (s *localConsumerWorkerSuite) SetUpTest(c *tc.C) {
 	s.offerUUID = tc.Must(c, uuid.NewUUID).String()
 
 	s.relationLifeChanges = make(chan []string)
+	s.offerStatusChanges = make(chan []watcher.OfferStatusChange)
 	s.secretRevisionChanges = make(chan []watcher.SecretRevisionChange)
 
 	s.macaroon = newMacaroon(c, "test")
@@ -420,6 +422,183 @@ func (s *localConsumerWorkerSuite) TestStartWatchOfferStatusPermissionRevokedWor
 	// The worker should be cleanly killable even though the retry loop
 	// is running and never succeeds.
 	workertest.CleanKill(c, w)
+}
+
+// TestOfferStatusChangedResumesSuspendedRelations tests that receiving an
+// offer status notification resumes the offerer application's suspended
+// relations, as the notification means the offer status watcher is
+// established and the offer can be accessed again.
+func (s *localConsumerWorkerSuite) TestOfferStatusChangedResumesSuspendedRelations(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	done := s.expectWorkerStartup()
+
+	relationUUID1 := tc.Must(c, relation.NewUUID)
+	relationUUID2 := tc.Must(c, relation.NewUUID)
+
+	s.crossModelService.EXPECT().
+		SetRemoteApplicationOffererStatus(gomock.Any(), s.applicationName, gomock.Any()).
+		Return(nil)
+
+	s.crossModelService.EXPECT().
+		GetSuspendedRelationsForApplication(gomock.Any(), s.applicationUUID).
+		Return([]relation.UUID{relationUUID1, relationUUID2}, nil)
+
+	resumed := make(chan struct{}, 2)
+	s.crossModelService.EXPECT().
+		SetRemoteRelationSuspendedState(gomock.Any(), relationUUID1, false, "").
+		DoAndReturn(func(context.Context, relation.UUID, bool, string) error {
+			resumed <- struct{}{}
+			return nil
+		})
+	s.crossModelService.EXPECT().
+		SetRemoteRelationSuspendedState(gomock.Any(), relationUUID2, false, "").
+		DoAndReturn(func(context.Context, relation.UUID, bool, string) error {
+			resumed <- struct{}{}
+			return nil
+		})
+
+	w := s.newLocalConsumerWorker(c)
+	defer workertest.DirtyKill(c, w)
+
+	select {
+	case <-done:
+	case <-c.Context().Done():
+		c.Fatalf("timed out waiting for worker to be started")
+	}
+
+	select {
+	case s.offerStatusChanges <- []watcher.OfferStatusChange{{
+		UUID:   s.offerUUID,
+		Status: status.StatusInfo{Status: status.Active},
+	}}:
+	case <-c.Context().Done():
+		c.Fatalf("timed out sending offer status change")
+	}
+
+	for range []int{0, 1} {
+		select {
+		case <-resumed:
+		case <-c.Context().Done():
+			c.Fatalf("timed out waiting for relation to be resumed")
+		}
+	}
+
+	workertest.CheckAlive(c, w)
+}
+
+// TestOfferStatusChangedNoSuspendedRelations tests that receiving an offer
+// status notification when there are no suspended relations is a no-op.
+func (s *localConsumerWorkerSuite) TestOfferStatusChangedNoSuspendedRelations(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	done := s.expectWorkerStartup()
+
+	enumerated := make(chan struct{})
+	s.crossModelService.EXPECT().
+		SetRemoteApplicationOffererStatus(gomock.Any(), s.applicationName, gomock.Any()).
+		Return(nil)
+	s.crossModelService.EXPECT().
+		GetSuspendedRelationsForApplication(gomock.Any(), s.applicationUUID).
+		DoAndReturn(func(context.Context, application.UUID) ([]relation.UUID, error) {
+			defer close(enumerated)
+			return nil, nil
+		})
+
+	w := s.newLocalConsumerWorker(c)
+	defer workertest.DirtyKill(c, w)
+
+	select {
+	case <-done:
+	case <-c.Context().Done():
+		c.Fatalf("timed out waiting for worker to be started")
+	}
+
+	select {
+	case s.offerStatusChanges <- []watcher.OfferStatusChange{{
+		UUID:   s.offerUUID,
+		Status: status.StatusInfo{Status: status.Active},
+	}}:
+	case <-c.Context().Done():
+		c.Fatalf("timed out sending offer status change")
+	}
+
+	select {
+	case <-enumerated:
+	case <-c.Context().Done():
+		c.Fatalf("timed out waiting for suspended relations to be queried")
+	}
+
+	workertest.CheckAlive(c, w)
+}
+
+// TestOfferStatusChangedTerminatedNoResume tests that a terminated offer
+// removes the remote application offerer without resuming suspended
+// relations.
+func (s *localConsumerWorkerSuite) TestOfferStatusChangedTerminatedNoResume(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	done := s.expectWorkerStartup()
+
+	s.crossModelService.EXPECT().
+		RemoveRemoteApplicationOffererByApplicationUUID(gomock.Any(), s.applicationUUID, true, time.Minute).
+		Return(removal.UUID(""), nil)
+
+	w := s.newLocalConsumerWorker(c)
+
+	select {
+	case <-done:
+	case <-c.Context().Done():
+		c.Fatalf("timed out waiting for worker to be started")
+	}
+
+	select {
+	case s.offerStatusChanges <- []watcher.OfferStatusChange{{
+		UUID:   s.offerUUID,
+		Status: status.StatusInfo{Status: status.Terminated},
+	}}:
+	case <-c.Context().Done():
+		c.Fatalf("timed out sending offer status change")
+	}
+
+	err := workertest.CheckKill(c, w)
+	c.Assert(err, tc.ErrorIs, RemoteApplicationOffererDeadErr)
+}
+
+// TestOfferStatusChangedResumeError tests that an error resuming suspended
+// relations kills the worker, which restarts and retries via the next
+// offer status notification.
+func (s *localConsumerWorkerSuite) TestOfferStatusChangedResumeError(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	done := s.expectWorkerStartup()
+
+	s.crossModelService.EXPECT().
+		SetRemoteApplicationOffererStatus(gomock.Any(), s.applicationName, gomock.Any()).
+		Return(nil)
+	s.crossModelService.EXPECT().
+		GetSuspendedRelationsForApplication(gomock.Any(), s.applicationUUID).
+		Return(nil, internalerrors.New("boom"))
+
+	w := s.newLocalConsumerWorker(c)
+
+	select {
+	case <-done:
+	case <-c.Context().Done():
+		c.Fatalf("timed out waiting for worker to be started")
+	}
+
+	select {
+	case s.offerStatusChanges <- []watcher.OfferStatusChange{{
+		UUID:   s.offerUUID,
+		Status: status.StatusInfo{Status: status.Active},
+	}}:
+	case <-c.Context().Done():
+		c.Fatalf("timed out sending offer status change")
+	}
+
+	err := workertest.CheckKill(c, w)
+	c.Assert(err, tc.ErrorMatches, `.*resuming suspended relations for offerer application "foo".*boom`)
 }
 
 func (s *localConsumerWorkerSuite) TestWatchApplicationStatusChanged(c *tc.C) {
@@ -3127,8 +3306,7 @@ func (s *localConsumerWorkerSuite) expectWorkerStartup() <-chan struct{} {
 		}).
 		DoAndReturn(func(ctx context.Context, oa params.OfferArg) (watcher.OfferStatusWatcher, error) {
 			defer close(done)
-			ch := make(chan []watcher.OfferStatusChange)
-			return watchertest.NewMockWatcher(ch), nil
+			return watchertest.NewMockWatcher(s.offerStatusChanges), nil
 		})
 
 	return done

@@ -90,6 +90,11 @@ type State interface {
 	// remote relation in the local model.
 	SetRemoteRelationSuspendedState(ctx context.Context, relationUUID string, suspended bool, reason string) error
 
+	// GetSuspendedRelationsForApplication returns the UUIDs of the alive
+	// relations the given application is part of that are currently
+	// suspended.
+	GetSuspendedRelationsForApplication(ctx context.Context, applicationID string) ([]string, error)
+
 	// SetRelationErrorStatus sets the relation status to Error. This method only
 	// allows updating the status of cross-model relations.
 	SetRelationErrorStatus(ctx context.Context, relationUUID string, message string) error
@@ -726,6 +731,36 @@ func (s *Service) GetRelationDetails(
 		Suspended:    relationDetails.Suspended,
 		InScopeUnits: relationDetails.InScopeUnits,
 	}, nil
+}
+
+// GetSuspendedRelationsForApplication returns the UUIDs of the alive
+// relations the given application is part of that are currently suspended.
+//
+// The following error types can be expected to be returned:
+//   - [applicationerrors.ApplicationUUIDNotValid] is returned if the
+//     application UUID is not valid.
+func (s *Service) GetSuspendedRelationsForApplication(
+	ctx context.Context,
+	appUUID application.UUID,
+) ([]corerelation.UUID, error) {
+	ctx, span := trace.Start(ctx, trace.NameFromFunc())
+	defer span.End()
+
+	if err := appUUID.Validate(); err != nil {
+		return nil, errors.Errorf(
+			"%w: %w", applicationerrors.ApplicationUUIDNotValid, err)
+	}
+
+	relationUUIDs, err := s.st.GetSuspendedRelationsForApplication(ctx, appUUID.String())
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	uuids := make([]corerelation.UUID, 0, len(relationUUIDs))
+	for _, relUUID := range relationUUIDs {
+		uuids = append(uuids, corerelation.UUID(relUUID))
+	}
+	return uuids, nil
 }
 
 // GetRelationsStatusForUnit returns RelationUnitStatus for all relations the

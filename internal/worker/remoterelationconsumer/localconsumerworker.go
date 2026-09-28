@@ -485,6 +485,15 @@ func (w *localConsumerWorker) loop() (err error) {
 				}
 			}
 
+			// Receiving an offer status notification means the offer status
+			// watcher is established, so the offer can currently be accessed.
+			// Resume any relations that were suspended while offer access was
+			// unavailable; the resulting relation change events re-register them
+			// with the offering model.
+			if err := w.resumeSuspendedRelations(ctx); err != nil {
+				return errors.Annotatef(err, "resuming suspended relations for offerer application %q", w.applicationName)
+			}
+
 		case changes, ok := <-w.secretChanges:
 			if !ok {
 				select {
@@ -505,6 +514,34 @@ func (w *localConsumerWorker) loop() (err error) {
 			}
 		}
 	}
+}
+
+// resumeSuspendedRelations resumes the relations of the offerer application
+// that are currently suspended. It is called when an offer status
+// notification is received, meaning the offer status watcher is established
+// and the offer can currently be accessed. Relations suspended because offer
+// access was unavailable are resumed; the resulting relation change events
+// re-register them with the offering model.
+func (w *localConsumerWorker) resumeSuspendedRelations(ctx context.Context) error {
+	relationUUIDs, err := w.crossModelService.GetSuspendedRelationsForApplication(ctx, w.applicationUUID)
+	if err != nil {
+		return errors.Annotatef(err, "querying suspended relations for %q", w.applicationName)
+	}
+
+	for _, relationUUID := range relationUUIDs {
+		w.logger.Infof(ctx, "resuming suspended relation %q, offer status watcher established", relationUUID)
+		if err := w.crossModelService.SetRemoteRelationSuspendedState(ctx, relationUUID, false, ""); err != nil {
+			// The relation may have been removed between querying the
+			// suspended relations and resuming it; there is nothing to
+			// resume in that case.
+			if errors.Is(err, relationerrors.RelationNotFound) {
+				continue
+			}
+			return errors.Annotatef(err, "resuming suspended relation %q", relationUUID)
+		}
+	}
+
+	return nil
 }
 
 func (w *localConsumerWorker) setupRemoteModelClient(ctx context.Context) (RemoteModelRelationsClient, error) {

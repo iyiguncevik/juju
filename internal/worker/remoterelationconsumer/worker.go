@@ -114,6 +114,11 @@ type RelationService interface {
 	// the worker of any changes.
 	WatchRelationsLifeSuspendedStatusForApplication(context.Context, application.UUID) (watcher.StringsWatcher, error)
 
+	// GetSuspendedRelationsForApplication returns the UUIDs of the alive
+	// relations the given application is part of that are currently
+	// suspended.
+	GetSuspendedRelationsForApplication(context.Context, application.UUID) ([]corerelation.UUID, error)
+
 	// GetRelationDetails returns RelationDetails for the given relationID.
 	GetRelationDetails(context.Context, corerelation.UUID) (relation.RelationDetails, error)
 

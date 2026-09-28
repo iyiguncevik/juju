@@ -1081,6 +1081,80 @@ func (s *remoteRelationSuite) TestSetRelationErrorStatusRelationNotFound(c *tc.C
 	c.Assert(err, tc.ErrorMatches, ".*relation not found.*")
 }
 
+// addSuspendedRemoteRelation adds a relation with an endpoint for the given
+// application, marks the application's charm as a CMR source, and suspends
+// the relation with the given reason.
+func (s *remoteRelationSuite) addSuspendedRemoteRelation(
+	c *tc.C, appUUID coreapplication.UUID, charmUUID corecharm.ID, endpointName, reason string,
+) corelrelation.UUID {
+	endpoint := domainrelation.Endpoint{
+		Relation: charm.Relation{
+			Name:      endpointName,
+			Role:      charm.RoleRequirer,
+			Interface: "database",
+			Scope:     charm.ScopeGlobal,
+		},
+	}
+	charmRelationUUID := s.addCharmRelation(c, charmUUID, endpoint.Relation)
+	applicationEndpointUUID := s.addApplicationEndpoint(c, appUUID, charmRelationUUID)
+	relationUUID := s.addRelation(c)
+	s.addRelationEndpoint(c, relationUUID, applicationEndpointUUID)
+
+	// Force the charm source to be a CMR.
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `UPDATE charm SET source_id = 2, architecture_id = NULL WHERE uuid = ?`, charmUUID.String())
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	err = s.state.SetRemoteRelationSuspendedState(c.Context(),
+		relationUUID.String(),
+		true,
+		reason,
+	)
+	c.Assert(err, tc.ErrorIsNil)
+
+	return relationUUID
+}
+
+func (s *remoteRelationSuite) TestGetSuspendedRelationsForApplication(c *tc.C) {
+	// Arrange: a suspended relation the first application is part of.
+	suspended := s.addSuspendedRemoteRelation(c, s.fakeApplicationUUID1, s.fakeCharmUUID1, "suspended", "offer access revoked")
+
+	// A second suspended relation the first application is part of, which
+	// is no longer alive, so it must be excluded.
+	dying := s.addSuspendedRemoteRelation(c, s.fakeApplicationUUID1, s.fakeCharmUUID1, "dying", "offer access revoked")
+	err := s.TxnRunner().StdTxn(c.Context(), func(ctx context.Context, tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, `
+UPDATE relation
+SET    life_id = (SELECT id FROM life WHERE value = 'dying')
+WHERE  uuid = ?`, dying.String())
+		return err
+	})
+	c.Assert(err, tc.ErrorIsNil)
+
+	// A suspended relation for a different application, which must be
+	// excluded.
+	s.addSuspendedRemoteRelation(c, s.fakeApplicationUUID2, s.fakeCharmUUID2, "other", "offer access revoked")
+
+	// Act
+	relationUUIDs, err := s.state.GetSuspendedRelationsForApplication(
+		c.Context(), s.fakeApplicationUUID1.String(),
+	)
+
+	// Assert
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(relationUUIDs, tc.SameContents, []string{suspended.String()})
+}
+
+func (s *remoteRelationSuite) TestGetSuspendedRelationsForApplicationNoRelations(c *tc.C) {
+	relationUUIDs, err := s.state.GetSuspendedRelationsForApplication(
+		c.Context(), s.fakeApplicationUUID1.String(),
+	)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(relationUUIDs, tc.HasLen, 0)
+}
+
 func (s *remoteRelationSuite) checkRelationStatus(c *tc.C, relationUUID corelrelation.UUID, expectedStatus status.RelationStatusType, expectedMessage string) {
 	c.Helper()
 

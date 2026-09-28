@@ -61,6 +61,50 @@ func (st *State) SetRemoteRelationSuspendedState(
 	return nil
 }
 
+// GetSuspendedRelationsForApplication returns the UUIDs of the alive
+// relations the given application is part of that are currently suspended.
+func (st *State) GetSuspendedRelationsForApplication(
+	ctx context.Context,
+	appID string,
+) ([]string, error) {
+	db, err := st.DB(ctx)
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	app := entityUUID{UUID: appID}
+	stmt, err := st.Prepare(`
+SELECT r.uuid AS &entityUUID.uuid
+FROM   relation AS r
+JOIN   life AS l ON r.life_id = l.id
+JOIN   relation_endpoint AS re ON r.uuid = re.relation_uuid
+JOIN   application_endpoint AS ae ON re.endpoint_uuid = ae.uuid
+WHERE  ae.application_uuid = $entityUUID.uuid
+AND    l.value = 'alive'
+AND    r.suspended = TRUE
+`, entityUUID{})
+	if err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	var relations []entityUUID
+	if err := db.Txn(ctx, func(ctx context.Context, tx *sqlair.TX) error {
+		err := tx.Query(ctx, stmt, app).GetAll(&relations)
+		if errors.Is(err, sqlair.ErrNoRows) {
+			return nil
+		}
+		return errors.Capture(err)
+	}); err != nil {
+		return nil, errors.Capture(err)
+	}
+
+	uuids := make([]string, 0, len(relations))
+	for _, rel := range relations {
+		uuids = append(uuids, rel.UUID)
+	}
+	return uuids, nil
+}
+
 // SetRelationErrorStatus sets the relation status to Error. This method only
 // allows updating the status of cross-model relations.
 //

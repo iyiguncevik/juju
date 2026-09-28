@@ -578,6 +578,43 @@ func (s *relationServiceSuite) TestGetRelationDetailsRelationUUIDNotValid(c *tc.
 	c.Assert(err, tc.ErrorIs, relationerrors.RelationUUIDNotValid, tc.Commentf("(Assert) unexpected error: %v", err))
 }
 
+func (s *relationServiceSuite) TestGetSuspendedRelationsForApplication(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	// Arrange:
+	appUUID := tc.Must(c, coreapplication.NewUUID)
+	relationUUIDs := []string{
+		corerelationtesting.GenRelationUUID(c).String(),
+		corerelationtesting.GenRelationUUID(c).String(),
+	}
+
+	s.state.EXPECT().GetSuspendedRelationsForApplication(gomock.Any(), appUUID.String()).
+		Return(relationUUIDs, nil)
+
+	expected := []corerelation.UUID{
+		corerelation.UUID(relationUUIDs[0]),
+		corerelation.UUID(relationUUIDs[1]),
+	}
+
+	// Act:
+	got, err := s.service.GetSuspendedRelationsForApplication(c.Context(), appUUID)
+
+	// Assert:
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(got, tc.DeepEquals, expected)
+}
+
+func (s *relationServiceSuite) TestGetSuspendedRelationsForApplicationUUIDNotValid(c *tc.C) {
+	// Arrange
+	defer s.setupMocks(c).Finish()
+
+	// Act
+	_, err := s.service.GetSuspendedRelationsForApplication(c.Context(), "bad-application-uuid")
+
+	// Assert
+	c.Assert(err, tc.ErrorIs, applicationerrors.ApplicationUUIDNotValid, tc.Commentf("(Assert) unexpected error: %v", err))
+}
+
 func (s *relationServiceSuite) TestGetRelationLifeSuspendedStatus(c *tc.C) {
 	defer s.setupMocks(c).Finish()
 
