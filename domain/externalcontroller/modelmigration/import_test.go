@@ -133,6 +133,33 @@ func (s *importSuite) TestExecuteReturnsError(c *tc.C) {
 	c.Assert(err, tc.ErrorMatches, "cannot import external controllers: fail on test")
 }
 
+func (s *importSuite) TestExecuteReturnsAliasConflict(c *tc.C) {
+	defer s.setupMocks(c).Finish()
+
+	model := description.NewModel(description.ModelArgs{})
+	model.AddExternalController(description.ExternalControllerArgs{
+		ID:     "ctrl1",
+		Addrs:  []string{"192.168.1.1:8080"},
+		Alias:  "prod",
+		CACert: "ca-cert-1",
+		Models: []string{"model1"},
+	})
+
+	expectedCtrls := []crossmodel.ControllerInfo{{
+		ControllerUUID: "ctrl1",
+		Addrs:          []string{"192.168.1.1:8080"},
+		Alias:          "prod",
+		CACert:         "ca-cert-1",
+		ModelUUIDs:     []string{"model1"},
+	}}
+	s.service.EXPECT().ImportExternalControllers(gomock.All(), expectedCtrls).
+		Return(errors.Errorf("target controller already has alias %q", "prod"))
+
+	op := s.newImportOperation()
+	err := op.Execute(c.Context(), model)
+	c.Assert(err, tc.ErrorMatches, `cannot import external controllers: target controller already has alias "prod"`)
+}
+
 func (s *importSuite) newImportOperation() *importOperation {
 	return &importOperation{
 		service: s.service,

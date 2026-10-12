@@ -4,6 +4,9 @@ CREATE TABLE external_controller (
     ca_cert TEXT NOT NULL
 );
 
+CREATE UNIQUE INDEX idx_external_controller_alias
+ON external_controller (alias) WHERE alias != '';
+
 CREATE TABLE external_controller_address (
     uuid TEXT NOT NULL PRIMARY KEY,
     controller_uuid TEXT NOT NULL,

@@ -14,6 +14,7 @@ import (
 	coredatabase "github.com/juju/juju/core/database"
 	coreerrors "github.com/juju/juju/core/errors"
 	"github.com/juju/juju/domain"
+	"github.com/juju/juju/internal/database"
 	"github.com/juju/juju/internal/errors"
 	"github.com/juju/juju/internal/uuid"
 )
@@ -148,6 +149,9 @@ func (st *State) ImportExternalControllers(ctx context.Context, infos []crossmod
 				tx,
 				ci,
 			)
+			if database.IsErrConstraintUnique(err) {
+				return errors.Errorf("target controller already has alias %q", ci.Alias)
+			}
 			if err != nil {
 				return errors.Capture(err)
 			}

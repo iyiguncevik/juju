@@ -277,6 +277,46 @@ func (s *stateSuite) TestUpdateExternalControllerUpsertAndReplace(c *tc.C) {
 	c.Check(addrs.Contains("192.168.0.10"), tc.IsTrue)
 }
 
+func (s *stateSuite) TestImportExternalControllersRejectsDuplicateAlias(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory())
+
+	existing := crossmodel.ControllerInfo{
+		ControllerUUID: uuid.MustNewUUID().String(),
+		Alias:          "prod",
+		CACert:         "existing-cert",
+	}
+	err := st.UpdateExternalController(c.Context(), existing)
+	c.Assert(err, tc.ErrorIsNil)
+
+	imported := crossmodel.ControllerInfo{
+		ControllerUUID: uuid.MustNewUUID().String(),
+		Alias:          "prod",
+		CACert:         "imported-cert",
+	}
+	err = st.ImportExternalControllers(c.Context(), []crossmodel.ControllerInfo{imported})
+	c.Assert(err, tc.ErrorMatches, `target controller already has alias "prod"`)
+
+	_, err = st.Controller(c.Context(), imported.ControllerUUID)
+	c.Assert(err, tc.ErrorMatches, `external controller ".*" not found`)
+}
+
+func (s *stateSuite) TestImportExternalControllersAllowsEmptyAliases(c *tc.C) {
+	st := NewState(s.TxnRunnerFactory())
+
+	controllers := []crossmodel.ControllerInfo{
+		{
+			ControllerUUID: uuid.MustNewUUID().String(),
+			CACert:         "first-cert",
+		},
+		{
+			ControllerUUID: uuid.MustNewUUID().String(),
+			CACert:         "second-cert",
+		},
+	}
+	err := st.ImportExternalControllers(c.Context(), controllers)
+	c.Assert(err, tc.ErrorIsNil)
+}
+
 func (s *stateSuite) TestUpdateExternalControllerUpdateModel(c *tc.C) {
 	st := NewState(s.TxnRunnerFactory())
 
