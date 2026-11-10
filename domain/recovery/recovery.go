@@ -4,6 +4,7 @@
 package recovery
 
 import (
+	"github.com/juju/juju/core/constraints"
 	"github.com/juju/juju/core/semversion"
 	"github.com/juju/juju/internal/errors"
 )
@@ -61,12 +62,31 @@ type ModelInfo struct {
 }
 
 // ArchiveInfo is the validated summary of a controller backup archive.
-// It is produced before anything is provisioned and drives the recovery
-// preflight checks.
+// It is produced before anything is provisioned and carries the source
+// facts the replacement allocation needs.
 type ArchiveInfo struct {
+	// Provisioning requirements come from the archived source, not CLI defaults.
+	Constraints       constraints.Value
+	StoragePools      map[string]map[string]string
+	DatabaseSizeBytes int64
+
+	// Cloud and Region identify the original provisioning target.
+	Cloud  CloudInfo
+	Region string
+	// Credential is used only when local credentials are unavailable.
+	Credential *CredentialInfo
+	// ModelConfig contains the source controller model's provider settings.
+	ModelConfig map[string]string
+
 	// AgentVersion is the exact agent version of the source controller,
-	// read from the archive metadata (the manifest).
+	// read from metadata.json.
 	AgentVersion semversion.Number
+
+	// SourceBase is the operating system base recorded in metadata.json.
+	SourceBase string
+	// MachineName is the source agent identity recorded in metadata.json.
+	MachineName      string
+	ControllerConfig map[string]string
 
 	// ControllerUUID is the source controller's logical identity.
 	ControllerUUID string
@@ -108,6 +128,32 @@ type ArchiveInfo struct {
 
 	// Size is the archive file's size in bytes.
 	Size int64
+
+	// ImportSize estimates unpacking, object copies and database import space.
+	ImportSize int64
+}
+
+// CloudInfo describes the cloud recorded in the controller export.
+type CloudInfo struct {
+	Name, Type                                  string
+	Endpoint, IdentityEndpoint, StorageEndpoint string
+	AuthTypes                                   []string
+	CACertificates                              []string
+	SkipTLSVerify                               bool
+	Regions                                     []RegionInfo
+}
+
+// RegionInfo retains the source region's endpoint overrides.
+type RegionInfo struct {
+	Name, Endpoint, IdentityEndpoint, StorageEndpoint string
+}
+
+// CredentialInfo describes the controller model's archived cloud credential.
+type CredentialInfo struct {
+	UUID             string
+	Name, AuthType   string
+	Attributes       map[string]string
+	Revoked, Invalid bool
 }
 
 // CheckAgentVersion enforces the exact-version recovery gate: an archive

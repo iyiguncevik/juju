@@ -7,8 +7,10 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -17,13 +19,27 @@ import (
 	"testing"
 
 	"github.com/juju/errors"
+	"github.com/juju/names/v6"
 	"github.com/juju/tc"
+	jujusshtools "github.com/juju/utils/v4/ssh"
+	"gopkg.in/yaml.v3"
 
+	"github.com/juju/juju/api/jujuclient"
+	"github.com/juju/juju/cloud"
 	"github.com/juju/juju/cmd/cmd"
 	"github.com/juju/juju/cmd/cmd/cmdtesting"
+	"github.com/juju/juju/cmd/juju/backups"
 	"github.com/juju/juju/cmd/modelcmd"
 	corebackups "github.com/juju/juju/core/backups"
+	"github.com/juju/juju/core/constraints"
+	"github.com/juju/juju/core/instance"
+	jujuversion "github.com/juju/juju/core/version"
+	"github.com/juju/juju/domain/recovery"
+	"github.com/juju/juju/environs"
+	"github.com/juju/juju/environs/cloudspec"
+	"github.com/juju/juju/internal/pki"
 	coretesting "github.com/juju/juju/internal/testing"
+	"github.com/juju/juju/juju/osenv"
 )
 
 type recoverySuite struct {
@@ -31,6 +47,79 @@ type recoverySuite struct {
 }
 
 func TestRecoverySuite(t *testing.T) { tc.Run(t, &recoverySuite{}) }
+
+func init() {
+	environs.RegisterProvider("recoveryalloc", recoveryAllocProvider{})
+}
+
+const (
+	// recoveryTestControllerUUID is the fixture source controller's
+	// identity, and recoveryTestControllerModelUUID its controller
+	// model's identity.
+	recoveryTestControllerUUID      = "5a5a5a5a-1111-2222-3333-444455556666"
+	recoveryTestControllerModelUUID = "5a5a5a5a-aaaa-2222-3333-444455556666"
+)
+
+var (
+	recoveryPrepared    environs.RecoveryControllerParams
+	recoveryProvisioned environs.RecoveryMachineParams
+	recoveryStarted     instance.Id
+)
+
+// recoveryAllocProvider is a stub machine provider: opening succeeds and the
+// environ implements the recovery machine contracts. Anything outside the
+// allocation flow panics through the embedded interfaces.
+type recoveryAllocProvider struct{ environs.EnvironProvider }
+
+func (p recoveryAllocProvider) Open(ctx context.Context, params environs.OpenParams, _ environs.CredentialInvalidator) (environs.Environ, error) {
+	return &recoveryAllocEnviron{}, nil
+}
+
+func (p recoveryAllocProvider) ValidateCloud(ctx context.Context, spec cloudspec.CloudSpec) error {
+	return nil
+}
+func (p recoveryAllocProvider) DetectCredentials(string) (*cloud.CloudCredential, error) {
+	return nil, errors.NotFoundf("local credentials")
+}
+
+func (p recoveryAllocProvider) CredentialSchemas() map[cloud.AuthType]cloud.CredentialSchema {
+	return map[cloud.AuthType]cloud.CredentialSchema{
+		cloud.UserPassAuthType: {
+			{Name: "username", CredentialAttr: cloud.CredentialAttr{Description: "The username to authenticate with."}},
+			{Name: "password", CredentialAttr: cloud.CredentialAttr{Description: "The password for the specified username.", Hidden: true}},
+		},
+	}
+}
+
+func (p recoveryAllocProvider) FinalizeCredential(_ environs.FinalizeCredentialContext, args environs.FinalizeCredentialParams) (*cloud.Credential, error) {
+	return &args.Credential, nil
+}
+
+type recoveryAllocEnviron struct{ environs.Environ }
+
+func (e *recoveryAllocEnviron) ConstraintsValidator(ctx context.Context) (constraints.Validator, error) {
+	return constraints.NewValidator(), nil
+}
+
+func (e *recoveryAllocEnviron) PrepareForRecovery(ctx environs.BootstrapContext, params environs.RecoveryControllerParams) error {
+	recoveryPrepared = params
+	return nil
+}
+
+func (e *recoveryAllocEnviron) ProvisionRecoveryMachine(ctx environs.BootstrapContext, params environs.RecoveryMachineParams) (*environs.BootstrapResult, error) {
+	recoveryProvisioned = params
+	const started = instance.Id("juju-recoveryalloc-1234567")
+	recoveryStarted = started
+	if params.InstanceStarted != nil {
+		params.InstanceStarted(started)
+	}
+	return &environs.BootstrapResult{}, nil
+}
+
+func (s *recoverySuite) SetUpTest(c *tc.C) {
+	s.BaseSuite.SetUpTest(c)
+	c.Assert(jujusshtools.LoadClientKeys(osenv.JujuXDGDataHomePath("ssh")), tc.ErrorIsNil)
+}
 
 // TestInit verifies that argument validation rejects the failing
 // shapes in the table, and that both given paths are recorded as
@@ -186,18 +275,18 @@ func (s *recoverySuite) TestRun(c *tc.C) {
 			return `invalid recovery archive: reading archive: EOF`
 		},
 	}, {
-		summary:   "valid archive reaches the terminal error",
+		summary:   "valid archive stops at archived agent selection",
 		assertion: &assertionYAML,
 		archive:   true,
 		expect: func(_, _ string) string {
-			return `controller recovery provisioning is not available in this build`
+			return `selecting archived controller agent: unexpected EOF`
 		},
 	}, {
 		summary:   "assertion records the checksum in uppercase hex",
 		assertion: &uppercaseAssertion,
 		archive:   true,
 		expect: func(_, _ string) string {
-			return `controller recovery provisioning is not available in this build`
+			return `selecting archived controller agent: unexpected EOF`
 		},
 	}} {
 		c.Logf("test %d: %s", i, test.summary)
@@ -293,10 +382,11 @@ func (r *failingCloseReader) Close() error {
 
 // recoveryArchive renders a minimal valid recovery archive: the
 // provenance metadata, a controller dump recording one controller
-// model on an lxd cloud, that model's database dump, and the
-// data-directory files archive. It is the smallest archive the
-// recover command's validation accepts, so reaching the terminal
-// error proves the whole read and verify path ran.
+// model on an lxd cloud, that model's database dump including its
+// controller machine and unit, and the data-directory files archive.
+// It is the smallest archive the recover command's validation accepts,
+// so reaching the agent-selection error proves the whole read and
+// verify path ran.
 func recoveryArchive(c *tc.C) []byte {
 	const (
 		controllerUUID      = "c0ffee00-1111-2222-3333-444455556666"
@@ -344,10 +434,26 @@ payload:
     model_type_id: 0
 `
 	files := map[string][]byte{
-		"juju-backup/metadata.json":                                []byte(metadata),
-		"juju-backup/dump/controller.yaml":                         []byte(controllerDump),
-		"juju-backup/dump/models/" + controllerModelUUID + ".yaml": []byte("payload: {}\n"),
-		"juju-backup/root.tar":                                     []byte("blobs"),
+		"juju-backup/metadata.json":        []byte(metadata),
+		"juju-backup/dump/controller.yaml": []byte(controllerDump),
+		"juju-backup/dump/models/" + controllerModelUUID + ".yaml": []byte(`payload:
+  net_node:
+  - uuid: nn
+  application_controller:
+  - application_uuid: controller-app
+  unit:
+  - uuid: controller-unit
+    name: controller/0
+    application_uuid: controller-app
+    life_id: 0
+    net_node_uuid: nn
+  machine:
+  - uuid: controller-machine
+    name: "0"
+    net_node_uuid: nn
+    life_id: 0
+`),
+		"juju-backup/root.tar": []byte("blobs"),
 	}
 
 	var buf bytes.Buffer
@@ -373,4 +479,398 @@ payload:
 	c.Assert(tw.Close(), tc.ErrorIsNil)
 	c.Assert(gz.Close(), tc.ErrorIsNil)
 	return buf.Bytes()
+}
+
+func recoveryMetadataJSON(agentVersion string) string {
+	return `{` +
+		`"ID":"20260930-120000.aabb-ccdd-eeff",` +
+		`"FormatVersion":2,` +
+		`"Checksum":"abc",` +
+		`"ChecksumFormat":"SHA-256, hex encoded",` +
+		`"Size":10,` +
+		`"Stored":"0001-01-01T00:00:00Z",` +
+		`"Started":"2026-09-30T12:00:00Z",` +
+		`"Finished":"2026-09-30T12:00:34Z",` +
+		`"Notes":"",` +
+		`"ModelUUID":"ctrl-model-uuid",` +
+		`"Machine":"0",` +
+		`"Hostname":"myhost",` +
+		`"Version":"` + agentVersion + `",` +
+		`"ControllerUUID":"ctrl-uuid",` +
+		`"HANodes":1` +
+		`}` + "\n"
+}
+
+// recoveryControllerDump renders one controller model plus the given
+// workload models as (name, modelTypeID) pairs.
+func recoveryControllerDump(models ...[2]string) string {
+	out := "payload:\n" +
+		"  controller:\n" +
+		"  - uuid: ctrl-uuid\n" +
+		"    model_uuid: ctrl-model-uuid\n" +
+		"    target_version: 4.1.0\n" +
+		"    ca_cert: source-ca-cert\n" +
+		"    ca_private_key: source-ca-key\n" +
+		"  cloud:\n" +
+		"  - uuid: cloud-1\n    name: lxd\n    cloud_type_id: 1\n    endpoint: ''\n    skip_tls_verify: false\n" +
+		"  cloud_type:\n" +
+		"  - id: 1\n    type: lxd\n" +
+		"  model_type:\n" +
+		"  - id: 0\n    type: iaas\n" +
+		"  - id: 1\n    type: caas\n" +
+		"  controller_config:\n" +
+		"  - key: controller-name\n    value: source-ctrl\n" +
+		"  model:\n" +
+		"  - uuid: ctrl-model-uuid\n    name: controller\n    cloud_uuid: cloud-1\n" +
+		"    model_type_id: 0\n    activated: true\n    life_id: 0\n    qualifier: ''\n"
+	for i, m := range models {
+		out += fmt.Sprintf(
+			"  - uuid: model-uuid-%d\n    name: %s\n    cloud_uuid: cloud-1\n"+
+				"    model_type_id: %s\n    activated: true\n    life_id: 0\n    qualifier: ''\n",
+			i, m[0], m[1])
+	}
+	return out
+}
+
+func recoveryArchiveFiles(agentVersion string, models ...[2]string) map[string][]byte {
+	files := map[string][]byte{
+		"juju-backup/metadata.json":        []byte(recoveryMetadataJSON(agentVersion)),
+		"juju-backup/dump/controller.yaml": []byte(recoveryControllerDump(models...)),
+		"juju-backup/dump/models/ctrl-model-uuid.yaml": []byte(`payload:
+  net_node:
+  - uuid: nn
+  application_controller:
+  - application_uuid: controller-app
+  unit:
+  - uuid: controller-unit
+    name: controller/0
+    application_uuid: controller-app
+    life_id: 0
+    net_node_uuid: nn
+  machine:
+  - uuid: controller-machine
+    name: "0"
+    net_node_uuid: nn
+    life_id: 0
+`),
+		"juju-backup/root.tar": []byte("blobs"),
+	}
+	for i := range models {
+		files[fmt.Sprintf("juju-backup/dump/models/model-uuid-%d.yaml", i)] =
+			[]byte("payload:\n  net_node:\n  - uuid: nn\n")
+	}
+	return files
+}
+
+func writeRecoveryArchive(c *tc.C, files map[string][]byte) (string, string) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		data := files[name]
+		c.Assert(tw.WriteHeader(&tar.Header{
+			Name: name, Mode: 0o600, Size: int64(len(data)), Typeflag: tar.TypeReg,
+		}), tc.ErrorIsNil)
+		_, err := tw.Write(data)
+		c.Assert(err, tc.ErrorIsNil)
+	}
+	c.Assert(tw.Close(), tc.ErrorIsNil)
+	c.Assert(gz.Close(), tc.ErrorIsNil)
+
+	sum := sha256.Sum256(buf.Bytes())
+	path := filepath.Join(c.MkDir(), "juju-backup.tar.gz")
+	c.Assert(os.WriteFile(path, buf.Bytes(), 0o600), tc.ErrorIsNil)
+	return path, hex.EncodeToString(sum[:])
+}
+
+// writeRecoveryAssertion writes a valid assertion for the archive,
+// recording the given checksum, beside it.
+func writeRecoveryAssertion(c *tc.C, archivePath, checksum string) string {
+	data, err := yaml.Marshal(backups.Assertion{
+		Checksum:       checksum,
+		ChecksumFormat: "SHA-256",
+	})
+	c.Assert(err, tc.ErrorIsNil)
+	path := archivePath + ".assert"
+	c.Assert(os.WriteFile(path, data, 0o600), tc.ErrorIsNil)
+	return path
+}
+
+// writeRecoveryAssertionData writes raw assertion content beside the
+// archive, for tests that need malformed or incomplete assertions.
+// TestHAControllersRejected verifies the single-controller admission
+// gate stops recovery before anything is provisioned.
+func (s *recoverySuite) TestHAControllersRejected(c *tc.C) {
+	dir := c.MkDir()
+	files := recoveryArchiveFiles(jujuversion.Current.String())
+	files["juju-backup/metadata.json"] = []byte(strings.Replace(
+		recoveryMetadataJSON(jujuversion.Current.String()), `"HANodes":1`, `"HANodes":3`, 1))
+	path, sum := writeRecoveryArchive(c, files)
+	assertion := writeRecoveryAssertion(c, path, sum)
+	archiveName, assertionName := filepath.Base(path), filepath.Base(assertion)
+	c.Assert(os.Rename(path, filepath.Join(dir, archiveName)), tc.ErrorIsNil)
+	c.Assert(os.Rename(assertion, filepath.Join(dir, assertionName)), tc.ErrorIsNil)
+
+	_, err := cmdtesting.RunCommandInDir(c, newRecoveryCommand(),
+		[]string{archiveName, assertionName}, dir)
+	c.Check(err, tc.ErrorMatches, "recovery of HA controllers in this build not supported")
+}
+
+// TestInvalidAssertionFailsBeforeStoreAccess verifies that an invalid
+// assertion stops Run before the client store is consulted or anything
+// is provisioned.
+func (s *recoverySuite) TestInvalidAssertionFailsBeforeStoreAccess(c *tc.C) {
+	path, _ := writeRecoveryArchive(c, recoveryArchiveFiles(jujuversion.Current.String()))
+	assertion := writeRecoveryAssertion(c, path, "deadbeef")
+	cmd := &recoveryCommand{archivePath: path, assertionPath: assertion}
+
+	// No client store is configured: Run must fail on the assertion.
+	err := cmd.Run(cmdtesting.Context(c))
+	c.Check(err, tc.ErrorMatches, `reading backup assertion ".*": backup assertion checksum must be a SHA-256 checksum: 64 hexadecimal characters`)
+}
+
+func (s *recoverySuite) TestCredentialSelection(c *tc.C) {
+	provider, err := environs.Provider("dummy")
+	c.Assert(err, tc.ErrorIsNil)
+	provider = noDetectionProvider{provider}
+	for _, mode := range []string{"local", "archived", "ambiguous", "revoked", "missing"} {
+		store := jujuclient.NewMemStore()
+		source := &recovery.CredentialInfo{
+			Name: "archived", AuthType: string(cloud.UserPassAuthType), Attributes: map[string]string{"username": "source", "password": "secret"},
+		}
+		if mode == "local" || mode == "ambiguous" {
+			credentials := map[string]cloud.Credential{"local": cloud.NewCredential(cloud.UserPassAuthType, map[string]string{"username": "local", "password": "fresh"})}
+			if mode == "ambiguous" {
+				credentials["second"] = credentials["local"]
+			}
+			store.Credentials["dummy"] = cloud.CloudCredential{AuthCredentials: credentials}
+		}
+		if mode == "revoked" {
+			source.Revoked = true
+		}
+		if mode == "missing" {
+			source = nil
+		}
+		p := recoveryCommand{}
+		p.SetClientStore(store)
+		credentials, region, err := p.recoveryCredentialsForCloud(cmdtesting.Context(c), provider, cloud.Cloud{
+			Name: "dummy", Type: "dummy", AuthTypes: []cloud.AuthType{cloud.UserPassAuthType},
+			Regions: []cloud.Region{{Name: "source-region"}},
+		}, "source-region", source)
+		switch mode {
+		case "ambiguous":
+			c.Check(err, tc.ErrorIs, modelcmd.ErrMultipleCredentials)
+		case "revoked":
+			c.Check(err, tc.ErrorMatches, "archived controller credential is revoked or invalid.*")
+		case "missing":
+			c.Check(err, tc.ErrorMatches, "no local or archived controller credential is available.*")
+		default:
+			c.Assert(err, tc.ErrorIsNil)
+			c.Check(credentials.name, tc.Equals, mode)
+			c.Check(region, tc.Equals, "source-region")
+		}
+	}
+}
+
+type failingRecoveryProvider struct{ environs.EnvironProvider }
+
+func (p failingRecoveryProvider) FinalizeCredential(environs.FinalizeCredentialContext, environs.FinalizeCredentialParams) (*cloud.Credential, error) {
+	return nil, errors.New("credential authentication failed")
+}
+
+func (s *recoverySuite) TestLocalCredentialErrorDoesNotFallBack(c *tc.C) {
+	provider, err := environs.Provider("dummy")
+	c.Assert(err, tc.ErrorIsNil)
+	store := jujuclient.NewMemStore()
+	// A selected local credential that fails authentication must not fall back.
+	store.Credentials["dummy"] = cloud.CloudCredential{AuthCredentials: map[string]cloud.Credential{
+		"local": cloud.NewCredential(cloud.UserPassAuthType, map[string]string{"username": "local", "password": "fresh"}),
+	}}
+	p := recoveryCommand{}
+	p.SetClientStore(store)
+	_, _, err = p.recoveryCredentialsForCloud(cmdtesting.Context(c), failingRecoveryProvider{provider}, cloud.Cloud{
+		Name: "dummy", Type: "dummy", AuthTypes: []cloud.AuthType{cloud.UserPassAuthType},
+	}, "", &recovery.CredentialInfo{Name: "archived"})
+	c.Check(err, tc.ErrorMatches, ".*credential authentication failed.*")
+}
+
+type noDetectionProvider struct{ environs.EnvironProvider }
+
+func (p noDetectionProvider) DetectCredentials(string) (*cloud.CloudCredential, error) {
+	return nil, errors.NotFoundf("local credentials")
+}
+
+// recoveryAgentRoot renders a data-directory files archive holding the
+// agent bundle for the given version, as the running controller would
+// record it.
+func recoveryAgentRoot(c *tc.C, version string) []byte {
+	name := version + "-ubuntu-amd64"
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	c.Assert(tw.WriteHeader(&tar.Header{
+		Name:     "var/lib/juju/tools/" + name + "/jujuagentd",
+		Typeflag: tar.TypeReg,
+		Mode:     0o755,
+		Size:     int64(len(name)),
+	}), tc.ErrorIsNil)
+	_, err := tw.Write([]byte(name))
+	c.Assert(err, tc.ErrorIsNil)
+	c.Assert(tw.Close(), tc.ErrorIsNil)
+	return buf.Bytes()
+}
+
+// indentPEM renders a PEM block as an indented YAML block scalar body.
+func indentPEM(pem []byte) string {
+	lines := strings.Split(strings.TrimRight(string(pem), "\n"), "\n")
+	for i, line := range lines {
+		lines[i] = "      " + line
+	}
+	return strings.Join(lines, "\n")
+}
+
+// TestAllocationPublishesPhaseAndRetainsTarget drives the whole allocation
+// path against the stub provider: a valid archive carrying an agent bundle
+// is allocated with a distinct physical identity, the phase result names
+// the replacement instance, and the client store records no controller.
+func (s *recoverySuite) TestAllocationPublishesPhaseAndRetainsTarget(c *tc.C) {
+	// The archived controller's CA material must be a usable CA, as the
+	// replacement's controller configuration is built from it.
+	signer, err := pki.DefaultKeyProfile()
+	c.Assert(err, tc.ErrorIsNil)
+	caX509, err := pki.NewCA("juju-recovery-test-ca", signer)
+	c.Assert(err, tc.ErrorIsNil)
+	authority, err := pki.NewDefaultAuthority(caX509, signer)
+	c.Assert(err, tc.ErrorIsNil)
+	caCertPEM, caKeyPEM, err := authority.ToPemParts()
+	c.Assert(err, tc.ErrorIsNil)
+
+	agentVersion := jujuversion.Current.String()
+	files := map[string][]byte{
+		"juju-backup/metadata.json": []byte(fmt.Sprintf(`{`+
+			`"ID":"20260930-120000.aabb-ccdd-eeff",`+
+			`"FormatVersion":2,`+
+			`"Checksum":"abc",`+
+			`"ChecksumFormat":"SHA-256, hex encoded",`+
+			`"Size":10,`+
+			`"Stored":"0001-01-01T00:00:00Z",`+
+			`"Started":"2026-09-30T12:00:00Z",`+
+			`"Finished":"2026-09-30T12:00:34Z",`+
+			`"Notes":"",`+
+			`"ModelUUID":"%s",`+
+			`"Machine":"0",`+
+			`"Hostname":"myhost",`+
+			`"Version":"%s",`+
+			`"Base":"ubuntu@24.04",`+
+			`"ControllerUUID":"%s",`+
+			`"HANodes":1`+
+			`}`+"\n", recoveryTestControllerModelUUID, agentVersion, recoveryTestControllerUUID)),
+		"juju-backup/dump/controller.yaml": []byte(fmt.Sprintf(`version: 4.1.0
+payload:
+  controller:
+  - uuid: %s
+    model_uuid: %s
+    api_port: "17070"
+    ca_cert: |
+%s
+    ca_private_key: |
+%s
+  cloud:
+  - uuid: cloud-1
+    name: recoverycloud
+    cloud_type_id: 1
+    endpoint: ''
+    skip_tls_verify: false
+  cloud_type:
+  - id: 1
+    type: recoveryalloc
+  model_type:
+  - id: 0
+    type: iaas
+  controller_config:
+  - key: controller-name
+    value: source-ctrl
+  model:
+  - uuid: %s
+    name: controller
+    cloud_uuid: cloud-1
+    model_type_id: 0
+    activated: true
+    life_id: 0
+    qualifier: ''
+`, recoveryTestControllerUUID, recoveryTestControllerModelUUID,
+			indentPEM(caCertPEM), indentPEM(caKeyPEM),
+			recoveryTestControllerModelUUID)),
+		fmt.Sprintf("juju-backup/dump/models/%s.yaml", recoveryTestControllerModelUUID): []byte(`version: 4.1.0
+payload:
+  machine:
+  - uuid: source-machine
+    name: "0"
+    net_node_uuid: source-node
+    life_id: 0
+  machine_constraint:
+  - machine_uuid: source-machine
+    constraint_uuid: source-constraint
+  constraint:
+  - uuid: source-constraint
+    arch: amd64
+    mem: 4096
+    root_disk: 20480
+`),
+		"juju-backup/root.tar": recoveryAgentRoot(c, agentVersion),
+	}
+	path, sum := writeRecoveryArchive(c, files)
+	assertion := writeRecoveryAssertion(c, path, sum)
+
+	store := jujuclient.NewMemStore()
+	store.Credentials["recoverycloud"] = cloud.CloudCredential{AuthCredentials: map[string]cloud.Credential{
+		"local": cloud.NewCredential(cloud.UserPassAuthType, map[string]string{"username": "local", "password": "fresh"}),
+	}}
+	command := &recoveryCommand{}
+	command.SetClientStore(store)
+	wrapped := modelcmd.Wrap(command, modelcmd.WrapSkipModelFlags, modelcmd.WrapSkipDefaultModel)
+
+	// Keep the archive and assertion beside the run's working directory:
+	// the relative arguments resolve exactly as the CLI resolves them.
+	dir := c.MkDir()
+	archiveName, assertionName := filepath.Base(path), filepath.Base(assertion)
+	c.Assert(os.Rename(path, filepath.Join(dir, archiveName)), tc.ErrorIsNil)
+	c.Assert(os.Rename(assertion, filepath.Join(dir, assertionName)), tc.ErrorIsNil)
+
+	recoveryPrepared = environs.RecoveryControllerParams{}
+	recoveryProvisioned = environs.RecoveryMachineParams{}
+	recoveryStarted = ""
+	ctx, err := cmdtesting.RunCommandInDir(c, wrapped, []string{archiveName, assertionName}, dir)
+	c.Assert(err, tc.ErrorMatches, "controller recovery import is not enabled in this build")
+
+	out := cmdtesting.Stderr(ctx)
+	c.Check(out, tc.Contains, "Recovery target allocated")
+	c.Check(out, tc.Contains, "provider instance: juju-recoveryalloc-1234567")
+	c.Check(out, tc.Contains, "recovery phase: target allocation complete; controller import is not enabled")
+
+	// The provider prepared for the archived controller identity and
+	// provisioned the replacement with a distinct physical identity.
+	c.Check(recoveryPrepared, tc.DeepEquals, environs.RecoveryControllerParams{
+		ControllerUUID:      recoveryTestControllerUUID,
+		ControllerName:      "source-ctrl",
+		ControllerModelUUID: recoveryTestControllerModelUUID,
+	})
+	c.Check(names.IsValidMachine(recoveryProvisioned.MachineID), tc.IsTrue)
+	c.Check(recoveryProvisioned.MachineID != "0", tc.IsTrue)
+	c.Check(string(recoveryStarted), tc.Equals, "juju-recoveryalloc-1234567")
+	c.Check(recoveryProvisioned.BootstrapBase.String(), tc.Equals, "ubuntu@24.04/stable")
+	c.Assert(recoveryProvisioned.AvailableTools, tc.HasLen, 1)
+	c.Check(recoveryProvisioned.AvailableTools[0].Version.Number.String(), tc.Equals, agentVersion)
+	c.Assert(recoveryProvisioned.BootstrapConstraints.Arch, tc.NotNil)
+	c.Check(*recoveryProvisioned.BootstrapConstraints.Arch, tc.Equals, "amd64")
+
+	// The client store records nothing: the allocated target is not a
+	// usable controller.
+	c.Check(store.Controllers, tc.HasLen, 0)
+	c.Check(store.Accounts, tc.HasLen, 0)
+	c.Check(store.Models, tc.HasLen, 0)
 }

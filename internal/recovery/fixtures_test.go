@@ -72,8 +72,8 @@ func controllerDump(models ...[3]string) string {
 		"    ca_cert: source-ca-cert\n" +
 		"    ca_private_key: source-ca-key\n" +
 		"  cloud:\n" +
-		"  - uuid: cloud-lxd\n    name: lxd\n    cloud_type_id: 1\n    endpoint: ''\n    skip_tls_verify: false\n" +
-		"  - uuid: cloud-k8s\n    name: myk8s\n    cloud_type_id: 2\n    endpoint: ''\n    skip_tls_verify: false\n" +
+		"  - uuid: cloud-lxd\n    name: lxd\n    cloud_type_id: 1\n    endpoint: ''\n    identity_endpoint: null\n    storage_endpoint: null\n    skip_tls_verify: false\n" +
+		"  - uuid: cloud-k8s\n    name: myk8s\n    cloud_type_id: 2\n    endpoint: ''\n    identity_endpoint: null\n    storage_endpoint: null\n    skip_tls_verify: false\n" +
 		"  cloud_type:\n" +
 		"  - id: 1\n    type: lxd\n" +
 		"  - id: 2\n    type: kubernetes\n" +
@@ -86,7 +86,8 @@ func controllerDump(models ...[3]string) string {
 	for _, m := range models {
 		fmt.Fprintf(&out,
 			"  - uuid: %s\n    name: %s\n    cloud_uuid: %s\n    model_type_id: %s\n"+
-				"    activated: true\n    life_id: 0\n    qualifier: ''\n",
+				"    activated: true\n    life_id: 0\n    qualifier: ''\n"+
+				"    cloud_region_uuid: null\n    cloud_credential_uuid: null\n",
 			m[0], m[1], m[2], "0")
 	}
 	return out.String()

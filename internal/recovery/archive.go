@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
+	"math"
 	"os"
 	"path"
 	"path/filepath"
@@ -80,6 +81,11 @@ type ArchiveContents struct {
 	ModelDumps map[string]string
 
 	stagingDir string
+
+	// ImportSize includes unpacked files, their installed copies, and
+	// database staging/import headroom. It excludes the already uploaded
+	// archive.
+	ImportSize int64
 }
 
 // readArchive streams archivePath once, computing the archive's SHA-256
@@ -151,6 +157,20 @@ func readArchive(ctx context.Context, logger corelogger.Logger, archivePath, exp
 	}
 	if len(contents.ControllerDump) == 0 {
 		return nil, "", 0, errors.Errorf("archive is missing %s", controllerDumpPath)
+	}
+
+	// Import workspace accounting: unpacking, installed copies and
+	// database import headroom for every archive entry. The files
+	// archive is counted once per copy rather than per extraction.
+	for name, digest := range reader.digests {
+		factor := int64(3)
+		if name == canonicalPaths.FilesArchive {
+			factor = 2
+		}
+		if digest.size > (math.MaxInt64-contents.ImportSize)/factor {
+			return nil, "", 0, errors.New("archive recovery size exceeds supported range")
+		}
+		contents.ImportSize += factor * digest.size
 	}
 
 	stat, err := os.Stat(archivePath)

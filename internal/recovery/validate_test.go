@@ -56,11 +56,87 @@ func (s *validateSuite) TestValidateArchive(c *tc.C) {
 	c.Check(info.Models[1].CloudType, tc.Equals, "lxd")
 }
 
+func (s *validateSuite) TestArchivedCloudRegionAndCredential(c *tc.C) {
+	files := validFiles()
+	dump := string(files["juju-backup/dump/controller.yaml"])
+	dump = strings.Replace(dump, "name: lxd\n    cloud_type_id: 1\n    endpoint: ''", "name: lxd\n    cloud_type_id: 1\n    endpoint: https://source.example", 1)
+	dump = strings.Replace(dump, "qualifier: ''\n    cloud_region_uuid: null\n    cloud_credential_uuid: null\n",
+		"qualifier: ''\n    cloud_region_uuid: source-region\n    cloud_credential_uuid: source-credential\n", 1)
+	// Workload models reference the same archived region.
+	dump = strings.ReplaceAll(dump, "cloud_region_uuid: null", "cloud_region_uuid: source-region")
+	dump += `  cloud_region:
+  - uuid: source-region
+    cloud_uuid: cloud-lxd
+    name: original-region
+    endpoint: https://region.example
+  auth_type:
+  - id: 1
+    type: userpass
+  cloud_auth_type:
+  - cloud_uuid: cloud-lxd
+    auth_type_id: 1
+  cloud_ca_cert:
+  - cloud_uuid: cloud-lxd
+    ca_cert: source-cloud-ca
+  cloud_credential:
+  - uuid: source-credential
+    cloud_uuid: cloud-lxd
+    name: original-credential
+    auth_type_id: 1
+    revoked: false
+    invalid: false
+  cloud_credential_attribute:
+  - cloud_credential_uuid: source-credential
+    key: username
+    value: source-user
+`
+	files["juju-backup/dump/controller.yaml"] = []byte(dump)
+	path, sum := writeArchive(c, files)
+	info, err := recovery.ValidateArchive(c.Context(), loggertesting.WrapCheckLog(c), path, sum)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(info.Cloud.Endpoint, tc.Equals, "https://source.example")
+	c.Check(info.Region, tc.Equals, "original-region")
+	c.Check(info.Cloud.Regions[0].Endpoint, tc.Equals, "https://region.example")
+	c.Check(info.Cloud.CACertificates, tc.DeepEquals, []string{"source-cloud-ca"})
+	c.Assert(info.Credential, tc.NotNil)
+	c.Check(info.Credential.AuthType, tc.Equals, "userpass")
+	c.Check(info.Credential.Attributes["username"], tc.Equals, "source-user")
+	for _, field := range []string{"cloud_region_uuid", "cloud_credential_uuid"} {
+		broken := strings.Replace(dump, field+": source-", field+": unknown-", 1)
+		files["juju-backup/dump/controller.yaml"] = []byte(broken)
+		path, sum := writeArchive(c, files)
+		_, err := recovery.ValidateArchive(c.Context(), loggertesting.WrapCheckLog(c), path, sum)
+		c.Check(err, tc.ErrorMatches, "controller model references an unknown cloud (region|credential)")
+	}
+}
+
 func (s *validateSuite) TestValidateArchiveChecksumMismatch(c *tc.C) {
 	path, _ := writeArchive(c, validFiles())
 
 	_, err := recovery.ValidateArchive(c.Context(), loggertesting.WrapCheckLog(c), path, "deadbeef")
 	c.Assert(err, tc.ErrorMatches, "archive checksum mismatch: expected sha256 .deadbeef., archive is .*")
+}
+
+func (s *validateSuite) TestModelConfigUsesStoredStrings(c *tc.C) {
+	files := validFiles()
+	files["juju-backup/dump/models/"+testControllerModelUUID+".yaml"] = []byte(`payload:
+  model_config:
+  - key: no-proxy
+    value: 127.0.0.1,localhost,::1
+  - key: project
+    value: '123'
+  - key: enable-os-upgrade
+    value: 'false'
+  - key: image-metadata-url
+    value: ''
+`)
+	path, sum := writeArchive(c, files)
+	info, err := recovery.ValidateArchive(c.Context(), loggertesting.WrapCheckLog(c), path, sum)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(info.ModelConfig, tc.DeepEquals, map[string]string{
+		"no-proxy": "127.0.0.1,localhost,::1", "project": "123",
+		"enable-os-upgrade": "false", "image-metadata-url": "",
+	})
 }
 
 func (s *validateSuite) TestValidateArchiveMissingMetadata(c *tc.C) {
@@ -683,4 +759,82 @@ func (s *validateSuite) TestValidateArchiveManifestDuplicateListing(c *tc.C) {
 	_, err = recovery.ValidateArchive(c.Context(), loggertesting.WrapCheckLog(c), path, "")
 	c.Assert(err, tc.ErrorMatches,
 		"juju-backup/manifest.json lists \"juju-backup/metadata.json\" twice")
+}
+
+func (s *validateSuite) TestSourceProvisioningRequirements(c *tc.C) {
+	files := validFiles()
+	key := "juju-backup/dump/models/" + testControllerModelUUID + ".yaml"
+	files[key] = []byte(`version: 4.1.0
+payload:
+  machine:
+  - uuid: source-machine
+    name: '0'
+    net_node_uuid: source-node
+    life_id: 0
+  machine_constraint:
+  - machine_uuid: source-machine
+    constraint_uuid: source-constraint
+  constraint:
+  - uuid: source-constraint
+    arch: amd64
+    cpu_cores: 2
+    mem: 4096
+    root_disk: 20480
+    instance_type: source-instance
+    instance_role: existing-role
+    root_disk_source: existing-pool
+    image_id: source-image
+    allocate_public_ip: 0
+    ip_family: dual
+  constraint_space:
+  - constraint_uuid: source-constraint
+    space: source-space
+    exclude: false
+  constraint_tag:
+  - constraint_uuid: source-constraint
+    tag: source-tag
+  constraint_zone:
+  - constraint_uuid: source-constraint
+    zone: source-zone
+  machine_cloud_instance:
+  - machine_uuid: source-machine
+    life_id: 0
+    cpu_cores: 4
+    mem: 8192
+    root_disk: 65536
+`)
+	path, sum := writeArchive(c, files)
+	info, err := recovery.ValidateArchive(c.Context(), loggertesting.WrapCheckLog(c), path, sum)
+	c.Assert(err, tc.ErrorIsNil)
+	cons := info.Constraints
+	c.Assert(cons.Arch, tc.NotNil)
+	c.Check(*cons.Arch, tc.Equals, "amd64")
+	c.Check(*cons.CpuCores, tc.Equals, uint64(4))
+	c.Check(*cons.Mem, tc.Equals, uint64(8192))
+	c.Check(*cons.RootDisk, tc.Equals, uint64(65536))
+	c.Check(*cons.InstanceRole, tc.Equals, "existing-role")
+	c.Check(*cons.ImageID, tc.Equals, "source-image")
+	c.Check(*cons.RootDiskSource, tc.Equals, "existing-pool")
+	c.Check(*cons.AllocatePublicIP, tc.IsFalse)
+	c.Check(cons.IPFamily.String(), tc.Equals, "dual")
+	c.Check(*cons.Spaces, tc.DeepEquals, []string{"source-space"})
+	c.Check(*cons.Tags, tc.DeepEquals, []string{"source-tag"})
+	c.Check(*cons.Zones, tc.DeepEquals, []string{"source-zone"})
+}
+
+func (s *validateSuite) TestImportSizeAccountsForArchiveEntries(c *tc.C) {
+	files := validFiles()
+	path, sum := writeArchive(c, files)
+	info, err := recovery.ValidateArchive(c.Context(), loggertesting.WrapCheckLog(c), path, sum)
+	c.Assert(err, tc.ErrorIsNil)
+
+	var want int64
+	for name, data := range files {
+		factor := int64(3)
+		if name == "juju-backup/root.tar" {
+			factor = 2
+		}
+		want += factor * int64(len(data))
+	}
+	c.Check(info.ImportSize, tc.Equals, want)
 }

@@ -143,6 +143,9 @@ func BootstrapInstance(
 		return nil, nil, nil, err
 	}
 
+	if args.RecoveryMachineID != "" {
+		instanceConfig.MachineId = args.RecoveryMachineID
+	}
 	ak := jujussh.MakeAuthorizedKeysString(args.AuthorizedKeys)
 	instanceConfig.AuthorizedKeys = ak
 
@@ -289,6 +292,9 @@ func BootstrapInstance(
 			)
 		}
 		return nil, nil, nil, errors.Annotatef(err, "cannot start bootstrap instance in availability zone %q", zone)
+	}
+	if args.InstanceStarted != nil {
+		args.InstanceStarted(result.Instance.Id())
 	}
 	modelFw, ok := env.(models.ModelFirewaller)
 	if ok {
