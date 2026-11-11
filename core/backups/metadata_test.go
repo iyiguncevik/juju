@@ -227,3 +227,17 @@ func (s *metadataSuite) TestBuildMetadata(c *tc.C) {
 	c.Check(meta.Controller.MachineID, tc.Equals, backups.UnknownString)
 	c.Check(meta.Controller.HANodes, tc.Equals, backups.UnknownInt64)
 }
+
+// TestDatabaseSizeBytesRoundTrip verifies that the observed database size
+// survives a serialise and decode cycle in archive metadata.
+func (s *metadataSuite) TestDatabaseSizeBytesRoundTrip(c *tc.C) {
+	meta := s.createTestMetadata(c)
+	meta.FormatVersion = 2
+	meta.DatabaseSizeBytes = 1 << 40
+
+	reader, err := meta.AsJSONBuffer()
+	c.Assert(err, tc.ErrorIsNil)
+	decoded, err := backups.NewMetadataJSONReader(reader)
+	c.Assert(err, tc.ErrorIsNil)
+	c.Check(decoded.DatabaseSizeBytes, tc.Equals, meta.DatabaseSizeBytes)
+}

@@ -8,7 +8,6 @@ import (
 
 	"github.com/juju/clock"
 	"github.com/juju/errors"
-	"github.com/juju/names/v6"
 	"github.com/juju/worker/v5"
 	"github.com/juju/worker/v5/dependency"
 
@@ -35,12 +34,12 @@ type ManifoldConfig struct {
 	ControllerUUID          string
 	ControllerModelUUID     string
 	ControllerNodeID        string
-	ControllerTag           names.Tag
 	MachineInstanceIDGetter GetMachineInstanceIDFunc
 	LocalConfigReader       LocalConfigReader
 	Clock                   clock.Clock
 	Logger                  logger.Logger
 	NewWorker               func(Config) (worker.Worker, error)
+	NewArchiveGenerator     ArchiveGeneratorConstructor
 }
 
 // Validate checks dependencies before the manifold starts.
@@ -53,9 +52,6 @@ func (c ManifoldConfig) Validate() error {
 	}
 	if c.ObjectStoreName == "" {
 		return errors.NotValidf("empty ObjectStoreName")
-	}
-	if c.ControllerTag == nil {
-		return errors.NotValidf("nil ControllerTag")
 	}
 	if c.MachineInstanceIDGetter == nil {
 		return errors.NotValidf("nil MachineInstanceIDGetter")
@@ -74,6 +70,9 @@ func (c ManifoldConfig) Validate() error {
 	}
 	if c.NewWorker == nil {
 		return errors.NotValidf("nil NewWorker")
+	}
+	if c.NewArchiveGenerator == nil {
+		return errors.NotValidf("nil NewArchiveGenerator")
 	}
 	return nil
 }
@@ -110,23 +109,54 @@ func Manifold(c ManifoldConfig) dependency.Manifold {
 				return nil, err
 			}
 
+			generator, err := c.NewArchiveGenerator(ArchiveGeneratorArgs{
+				Config:         c,
+				Paths:          paths,
+				DomainServices: domainServices,
+				ObjectStores:   objectStores,
+			})
+			if err != nil {
+				return nil, err
+			}
+
 			return c.NewWorker(Config{
 				LeaseManager:        leaseManager,
 				ControllerUUID:      c.ControllerUUID,
 				ControllerModelUUID: c.ControllerModelUUID,
 				ControllerNodeID:    c.ControllerNodeID,
-				CreateArchive: archiveGenerator{
-					config:         c,
-					paths:          paths,
-					domainServices: domainServices,
-					objectStores:   objectStores,
-				},
-				Clock:  c.Clock,
-				Logger: c.Logger,
+				CreateArchive:       generator,
+				Clock:               c.Clock,
+				Logger:              c.Logger,
 			})
 		},
 		Output: output,
 	}
+}
+
+// ArchiveGeneratorConstructor creates a substrate-specific archive generator
+// from dependencies the backup manifold has resolved.
+type ArchiveGeneratorConstructor func(ArchiveGeneratorArgs) (corebackups.BackupCreator, error)
+
+// ArchiveGeneratorArgs supplies a generator constructor with the manifold
+// configuration and its resolved dependencies.
+type ArchiveGeneratorArgs struct {
+	Config         ManifoldConfig
+	Paths          LocalValues
+	DomainServices services.DomainServicesGetter
+	ObjectStores   objectstore.ObjectStoreGetter
+}
+
+// MachineArchiveGenerator creates the archive generator used by machine
+// controllers. It records the controller machine base in archive metadata.
+func MachineArchiveGenerator(args ArchiveGeneratorArgs) (corebackups.BackupCreator, error) {
+	return machineArchiveGenerator{newArchiveGenerator(args)}, nil
+}
+
+// K8sArchiveGenerator creates the archive generator used by Kubernetes
+// controllers. Kubernetes source provisioning facts are added with the
+// Kubernetes recovery work; ordinary backups remain available meanwhile.
+func K8sArchiveGenerator(args ArchiveGeneratorArgs) (corebackups.BackupCreator, error) {
+	return k8sArchiveGenerator{newArchiveGenerator(args)}, nil
 }
 
 func output(in worker.Worker, out any) error {
@@ -151,9 +181,18 @@ type archiveGenerator struct {
 	objectStores   objectstore.ObjectStoreGetter
 }
 
-// Create creates a backup archive and returns its metadata, its path, and a
-// cleanup that removes it.
-func (g archiveGenerator) Create(ctx context.Context, notes string) (*corebackups.Metadata, string, func(), error) {
+func newArchiveGenerator(args ArchiveGeneratorArgs) archiveGenerator {
+	return archiveGenerator{
+		config:         args.Config,
+		paths:          args.Paths,
+		domainServices: args.DomainServices,
+		objectStores:   args.ObjectStores,
+	}
+}
+
+// create resolves request-scoped services and writes an archive using the
+// source recorder selected for the running controller substrate.
+func (g archiveGenerator) create(ctx context.Context, notes string, recorder func(string, MachineService) RecordSourceFunc) (*corebackups.Metadata, string, func(), error) {
 	controllerServices, err := g.domainServices.ServicesForModel(ctx, coremodel.UUID(g.config.ControllerModelUUID))
 	if err != nil {
 		return nil, "", nil, err
@@ -176,10 +215,10 @@ func (g archiveGenerator) Create(ctx context.Context, notes string) (*corebackup
 		return g.objectStores.GetObjectStore(ctx, modelUUID)
 	})
 
-	creator, err := NewCreator(CreatorConfig{
-		MachineTag:                    g.config.ControllerTag,
+	creator, err := newCreator(CreatorConfig{
 		ControllerUUID:                g.config.ControllerUUID,
 		ControllerModelUUID:           coremodel.UUID(g.config.ControllerModelUUID),
+		ControllerID:                  g.config.ControllerNodeID,
 		DataDir:                       g.paths.DataDir,
 		LogDir:                        g.paths.LogDir,
 		MachineInstanceIDGetter:       g.config.MachineInstanceIDGetter,
@@ -191,6 +230,7 @@ func (g archiveGenerator) Create(ctx context.Context, notes string) (*corebackup
 		ControllerNodes:               controllerServices.ControllerNode(),
 		ControllerObjectStore:         controllerStore,
 		ObjectStoreForModel:           modelObjectStoreFor,
+		RecordSource:                  recorder(g.config.ControllerNodeID, controllerServices.Machine()),
 		Clock:                         g.config.Clock,
 		Logger:                        g.config.Logger,
 	})
@@ -198,6 +238,18 @@ func (g archiveGenerator) Create(ctx context.Context, notes string) (*corebackup
 		return nil, "", nil, err
 	}
 	return creator.Create(ctx, notes)
+}
+
+type machineArchiveGenerator struct{ archiveGenerator }
+
+func (g machineArchiveGenerator) Create(ctx context.Context, notes string) (*corebackups.Metadata, string, func(), error) {
+	return g.create(ctx, notes, machineSourceRecorder)
+}
+
+type k8sArchiveGenerator struct{ archiveGenerator }
+
+func (g k8sArchiveGenerator) Create(ctx context.Context, notes string) (*corebackups.Metadata, string, func(), error) {
+	return g.create(ctx, notes, noSourceRecorder)
 }
 
 // modelExportDomainServices narrows the model services factory for the creator.

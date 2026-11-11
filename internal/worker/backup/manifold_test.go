@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/juju/errors"
-	"github.com/juju/names/v6"
 	"github.com/juju/tc"
 	"github.com/juju/worker/v5"
 	dt "github.com/juju/worker/v5/dependency/testing"
@@ -32,11 +31,11 @@ func manifoldConfig(c *tc.C) ManifoldConfig {
 		LeaseManagerName: "leases", DomainServicesName: "services", ObjectStoreName: "objects",
 		ControllerUUID: worker.ControllerUUID, ControllerModelUUID: worker.ControllerModelUUID,
 		ControllerNodeID:        worker.ControllerNodeID,
-		ControllerTag:           names.NewControllerAgentTag("0"),
 		MachineInstanceIDGetter: NoMachineInstanceID,
 		LocalConfigReader:       localConfigStub{values: LocalValues{DataDir: "/data", LogDir: "/logs"}},
 		Clock:                   worker.Clock, Logger: worker.Logger,
-		NewWorker: NewWorker,
+		NewWorker:           NewWorker,
+		NewArchiveGenerator: K8sArchiveGenerator,
 	}
 }
 
@@ -122,13 +121,13 @@ func (s *manifoldSuite) TestInvalidConfiguration(c *tc.C) {
 		{func(c *ManifoldConfig) { c.LeaseManagerName = "" }, "empty LeaseManagerName not valid"},
 		{func(c *ManifoldConfig) { c.DomainServicesName = "" }, "empty DomainServicesName not valid"},
 		{func(c *ManifoldConfig) { c.ObjectStoreName = "" }, "empty ObjectStoreName not valid"},
-		{func(c *ManifoldConfig) { c.ControllerTag = nil }, "nil ControllerTag not valid"},
 		{func(c *ManifoldConfig) { c.MachineInstanceIDGetter = nil }, "nil MachineInstanceIDGetter not valid"},
 		{func(c *ManifoldConfig) { c.ControllerNodeID = "" }, "empty ControllerNodeID not valid"},
 		{func(c *ManifoldConfig) { c.LocalConfigReader = nil }, "nil LocalConfigReader not valid"},
 		{func(c *ManifoldConfig) { c.Clock = nil }, "nil Clock not valid"},
 		{func(c *ManifoldConfig) { c.Logger = nil }, "nil Logger not valid"},
 		{func(c *ManifoldConfig) { c.NewWorker = nil }, "nil NewWorker not valid"},
+		{func(c *ManifoldConfig) { c.NewArchiveGenerator = nil }, "nil NewArchiveGenerator not valid"},
 		{func(c *ManifoldConfig) { c.LocalConfigReader = localConfigStub{} }, "empty backup paths not valid"},
 		{func(c *ManifoldConfig) { c.LocalConfigReader = localConfigStub{err: errors.New("paths failed")} }, "reading backup paths: paths failed"},
 	}
@@ -144,6 +143,33 @@ func (s *manifoldSuite) TestWorkerFailure(c *tc.C) {
 	cfg := manifoldConfig(c)
 	failure := errors.New("cannot start worker")
 	cfg.NewWorker = func(Config) (worker.Worker, error) { return nil, failure }
+	_, err := Manifold(cfg).Start(c.Context(), dt.StubGetter(manifoldResources()))
+	c.Check(err, tc.ErrorIs, failure)
+}
+
+func (s *manifoldSuite) TestArchiveGeneratorConstructedAtStart(c *tc.C) {
+	cfg := manifoldConfig(c)
+	called := false
+	cfg.NewArchiveGenerator = func(args ArchiveGeneratorArgs) (corebackups.BackupCreator, error) {
+		called = true
+		c.Check(args.Config.ControllerNodeID, tc.Equals, cfg.ControllerNodeID)
+		c.Check(args.Paths, tc.DeepEquals, LocalValues{DataDir: "/data", LogDir: "/logs"})
+		return K8sArchiveGenerator(args)
+	}
+
+	w, err := Manifold(cfg).Start(c.Context(), dt.StubGetter(manifoldResources()))
+	c.Assert(err, tc.ErrorIsNil)
+	c.Cleanup(func() { w.Kill(); c.Check(w.Wait(), tc.ErrorIsNil) })
+	c.Check(called, tc.IsTrue)
+}
+
+func (s *manifoldSuite) TestArchiveGeneratorConstructionFailure(c *tc.C) {
+	cfg := manifoldConfig(c)
+	failure := errors.New("cannot construct archive generator")
+	cfg.NewArchiveGenerator = func(ArchiveGeneratorArgs) (corebackups.BackupCreator, error) {
+		return nil, failure
+	}
+
 	_, err := Manifold(cfg).Start(c.Context(), dt.StubGetter(manifoldResources()))
 	c.Check(err, tc.ErrorIs, failure)
 }

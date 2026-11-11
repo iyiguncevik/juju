@@ -120,6 +120,9 @@ type Metadata struct {
 
 	// Controller contains metadata about the controller where the backup was taken.
 	Controller ControllerMetadata
+
+	// DatabaseSizeBytes is the observed source database size in bytes.
+	DatabaseSizeBytes int64
 }
 
 // ControllerMetadata contains controller specific metadata.
@@ -197,6 +200,7 @@ type flatMetadata struct {
 	HANodes                     int64
 	ControllerMachineID         string
 	ControllerMachineInstanceID string
+	DatabaseSizeBytes           int64 `json:",omitempty"`
 }
 
 func (m *Metadata) flat() flatMetadata {
@@ -213,6 +217,7 @@ func (m *Metadata) flat() flatMetadata {
 		ControllerUUID:              m.Controller.UUID,
 		ControllerMachineID:         m.Controller.MachineID,
 		ControllerMachineInstanceID: m.Controller.MachineInstanceID,
+		DatabaseSizeBytes:           m.DatabaseSizeBytes,
 		HANodes:                     m.Controller.HANodes,
 	}
 	stored := m.Stored()
@@ -239,6 +244,7 @@ func (flat *flatMetadata) inflate() (*Metadata, error) {
 		meta.Finished = &flat.Finished
 	}
 	meta.Notes = flat.Notes
+	meta.DatabaseSizeBytes = flat.DatabaseSizeBytes
 	meta.Origin = Origin{
 		Model:    flat.ModelUUID,
 		Machine:  flat.Machine,

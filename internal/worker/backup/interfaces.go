@@ -7,6 +7,8 @@ import (
 	"context"
 	"io"
 
+	corebackups "github.com/juju/juju/core/backups"
+	"github.com/juju/juju/core/base"
 	"github.com/juju/juju/core/instance"
 	"github.com/juju/juju/core/machine"
 	coremodel "github.com/juju/juju/core/model"
@@ -30,6 +32,8 @@ type ModelExportService interface {
 // MachineService provides the machine lookup used to record the controller
 // machine's cloud instance ID in the archive metadata.
 type MachineService interface {
+	// GetMachineBase returns the base for the given machine.
+	GetMachineBase(ctx context.Context, mName machine.Name) (base.Base, error)
 	// GetMachineUUID returns the UUID for the given machine.
 	GetMachineUUID(ctx context.Context, mName machine.Name) (machine.UUID, error)
 	// GetInstanceID returns the cloud instance ID for the given machine.
@@ -59,6 +63,10 @@ type GetMachineInstanceIDFunc func(
 	machineID string,
 	machineService MachineService,
 ) (string, error)
+
+// RecordSourceFunc records source facts needed to recover the controller.
+// The manifold binds the appropriate recorder for the running substrate.
+type RecordSourceFunc func(context.Context, *corebackups.Metadata) error
 
 // ModelConfigService provides the model configuration, used to resolve the
 // backup directory.

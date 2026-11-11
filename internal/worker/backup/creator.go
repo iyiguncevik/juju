@@ -11,7 +11,6 @@ import (
 
 	"github.com/juju/clock"
 	jujuerrors "github.com/juju/errors"
-	"github.com/juju/names/v6"
 
 	corebackups "github.com/juju/juju/core/backups"
 	"github.com/juju/juju/core/database"
@@ -44,6 +43,7 @@ type Creator struct {
 
 	controllerObjectStore ReadObjectStore
 	objectStoreForModel   ObjectStoreForModelFunc
+	recordSource          RecordSourceFunc
 
 	clock  clock.Clock
 	logger corelogger.Logger
@@ -51,9 +51,9 @@ type Creator struct {
 
 // CreatorConfig supplies the dependencies needed to create backup archives.
 type CreatorConfig struct {
-	MachineTag          names.Tag
 	ControllerUUID      string
 	ControllerModelUUID coremodel.UUID
+	ControllerID        string
 	DataDir             string
 	LogDir              string
 	ModelServicesGetter ModelServicesGetterFunc
@@ -91,20 +91,21 @@ type CreatorConfig struct {
 	ControllerObjectStore ReadObjectStore
 
 	ObjectStoreForModel ObjectStoreForModelFunc
+	RecordSource        RecordSourceFunc
 	Clock               clock.Clock
 	Logger              corelogger.Logger
 }
 
 // Validate checks that archive creation dependencies are complete.
 func (c CreatorConfig) Validate() error {
-	if c.MachineTag == nil {
-		return jujuerrors.NotValidf("nil MachineTag")
-	}
 	if c.ControllerUUID == "" {
 		return jujuerrors.NotValidf("empty ControllerUUID")
 	}
 	if err := c.ControllerModelUUID.Validate(); err != nil {
 		return jujuerrors.Annotate(err, "controller model UUID")
+	}
+	if c.ControllerID == "" {
+		return jujuerrors.NotValidf("empty ControllerID")
 	}
 	if c.DataDir == "" {
 		return jujuerrors.NotValidf("empty DataDir")
@@ -139,6 +140,9 @@ func (c CreatorConfig) Validate() error {
 	if c.ObjectStoreForModel == nil {
 		return jujuerrors.NotValidf("nil ObjectStoreForModel")
 	}
+	if c.RecordSource == nil {
+		return jujuerrors.NotValidf("nil RecordSource")
+	}
 	if c.Clock == nil {
 		return jujuerrors.NotValidf("nil Clock")
 	}
@@ -148,15 +152,16 @@ func (c CreatorConfig) Validate() error {
 	return nil
 }
 
-// NewCreator creates a new backup archive creator.
-func NewCreator(cfg CreatorConfig) (*Creator, error) {
+// newCreator creates a backup archive creator with source facts supplied by
+// the recorder selected in manifold wiring.
+func newCreator(cfg CreatorConfig) (*Creator, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return &Creator{
 		controllerUUID:        cfg.ControllerUUID,
 		controllerModelUUID:   cfg.ControllerModelUUID,
-		machineID:             cfg.MachineTag.Id(),
+		machineID:             cfg.ControllerID,
 		machineInstanceID:     cfg.MachineInstanceIDGetter,
 		dataDir:               cfg.DataDir,
 		logDir:                cfg.LogDir,
@@ -168,6 +173,7 @@ func NewCreator(cfg CreatorConfig) (*Creator, error) {
 		controllerNodes:       cfg.ControllerNodes,
 		controllerObjectStore: cfg.ControllerObjectStore,
 		objectStoreForModel:   cfg.ObjectStoreForModel,
+		recordSource:          cfg.RecordSource,
 		clock:                 cfg.Clock,
 		logger:                cfg.Logger,
 	}, nil
@@ -390,6 +396,13 @@ func (c *Creator) Create(ctx context.Context, notes string) (*corebackups.Metada
 		MachineInstanceID: instanceID,
 		HANodes:           int64(len(controllerIDs)),
 	}
+	if err := c.recordSource(ctx, meta); err != nil {
+		return nil, "", nil, errors.Capture(err)
+	}
+	meta.DatabaseSizeBytes, err = databaseSize(ctx, c.dataDir)
+	if err != nil {
+		return nil, "", nil, errors.Errorf("recording source database capacity: %w", err)
+	}
 
 	// The archive is written into a per-request temporary directory
 	// under the backup dir: its name is timestamp-based, so two
@@ -454,4 +467,26 @@ func MachineInstanceID(
 // no machine metadata is queried and the archive records no instance ID.
 func NoMachineInstanceID(_ context.Context, _ string, _ MachineService) (string, error) {
 	return "", nil
+}
+
+// machineSourceRecorder returns a recorder for a machine controller. It
+// records the controller machine's base, which recovery requires.
+func machineSourceRecorder(controllerID string, machineService MachineService) RecordSourceFunc {
+	return func(ctx context.Context, meta *corebackups.Metadata) error {
+		machineBase, err := machineService.GetMachineBase(ctx, machine.Name(controllerID))
+		if err != nil {
+			return errors.Errorf("recording controller base for recovery: %w", err)
+		}
+		if machineBase.Empty() {
+			return errors.New("recording controller base for recovery: controller machine base is empty")
+		}
+		meta.Origin.Base = machineBase.String()
+		return nil
+	}
+}
+
+// noSourceRecorder records no machine source facts. Kubernetes provisioning
+// facts are deliberately added with the Kubernetes recovery work.
+func noSourceRecorder(string, MachineService) RecordSourceFunc {
+	return func(context.Context, *corebackups.Metadata) error { return nil }
 }
