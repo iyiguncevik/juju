@@ -273,10 +273,25 @@ operator_rock_build_dir() {
     echo "${OPERATOR_ROCK_BUILD_DIR:-${BUILD_DIR}/rocks}"
 }
 
-# operator_rock_version is the rock archive version. It matches the image
-# tag portion of operator_image_path (no build number).
+# operator_rock_version is the rock archive version. It matches the version
+# the rock's jujud part stamps with 'craftctl set version': the base Juju
+# version, with the CI build number appended when JUJU_BUILD_NUMBER is set,
+# so the archive filename used by the amd64 QA builder matches the
+# build-numbered rock output.
 operator_rock_version() {
-    _strip_build_version "$(juju_version)"
+    version=$(juju_version)
+    case "${JUJU_BUILD_NUMBER:-}" in
+        "" | 0)
+            ;;
+        *[!0-9]*)
+            echo "operator rock: JUJU_BUILD_NUMBER '${JUJU_BUILD_NUMBER}' is not a positive decimal number" >&2
+            exit 1
+            ;;
+        *)
+            version="${version}.${JUJU_BUILD_NUMBER}"
+            ;;
+    esac
+    echo "${version}"
 }
 
 operator_rock_archive() {

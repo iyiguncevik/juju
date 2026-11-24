@@ -13,6 +13,10 @@ test_smoke_k8s() {
 	echo "====> Logging to ${file}"
 	bootstrap "test-smoke-k8s" "${file}"
 
+	# Assert the controller consumes the final build-qualified QA operator
+	# image before any model work runs (no-op without a QA registry path).
+	assert_k8s_controller_image
+
 	test_deploy "${file}"
 
 	test_restart_resilience "${file}"

@@ -164,14 +164,124 @@ parts:
       export CGO_CFLAGS="-I${CRAFT_STAGE}/usr/include"
       export CGO_LDFLAGS="-L${CRAFT_STAGE}/usr/lib/${CRAFT_ARCH_TRIPLET_BUILD_FOR}"
 
-      # CGO_RPATH is a plain '=' assignment in the Makefile, so it must be
-      # overridden on the command line: an environment value would be
-      # silently ignored and the rpath of the Docker image would survive
-      # into the binary. The rock resolves its libraries from the
-      # standard loader paths instead.
-      make go-agent-build CGO_RPATH=
+      # A CI source payload carries generated, non-secret build metadata next
+      # to this rockcraft.yaml (written by the QA source-packaging job): the
+      # source tarball omits .git and Rockcraft's managed LXD build does not
+      # receive ordinary host environment variables, so this file is the
+      # single hand-off point for the exact full SHA, build number, Juju
+      # version, module mode and default image namespace. The file is data,
+      # never sourced: parse it with a fixed allow-list and strict value
+      # validation. A rock definition without generated metadata is a
+      # packaging failure, not a local build; without the file the rock keeps
+      # the current local behaviour.
+      ci_build_info="${CRAFT_PROJECT_DIR}/.ci-build-info"
+      if [ -f "${ci_build_info}" ]; then
+        ci_git_commit=
+        ci_short_git_commit=
+        ci_build_number=
+        ci_juju_version=
+        ci_gomod_mode=
+        ci_pull_oci_registry=
+        ci_git_tree_state=
+        ci_seen_keys=
+        while IFS= read -r line || [ -n "${line}" ]; do
+          case "${line}" in
+            "" | "#"*)
+              continue
+              ;;
+          esac
+          key="${line%%=*}"
+          value="${line#*=}"
+          case " ${ci_seen_keys:-} " in
+            *" ${key} "*)
+              echo "duplicate key '${key}' in ${ci_build_info}" >&2
+              exit 1
+              ;;
+          esac
+          ci_seen_keys="${ci_seen_keys:-}${ci_seen_keys:+ }${key}"
+          case "${key}" in
+            GIT_COMMIT) ci_git_commit="${value}" ;;
+            SHORT_GIT_COMMIT) ci_short_git_commit="${value}" ;;
+            JUJU_BUILD_NUMBER) ci_build_number="${value}" ;;
+            JUJU_VERSION) ci_juju_version="${value}" ;;
+            JUJU_GOMOD_MODE) ci_gomod_mode="${value}" ;;
+            PULL_OCI_REGISTRY) ci_pull_oci_registry="${value}" ;;
+            GIT_TREE_STATE) ci_git_tree_state="${value}" ;;
+            *)
+              echo "unexpected key '${key}' in ${ci_build_info}" >&2
+              exit 1
+              ;;
+          esac
+        done < "${ci_build_info}"
 
-      version="$(go run ./scripts/version)"
+        ci_fail() {
+          echo "${ci_build_info}: $1" >&2
+          exit 1
+        }
+        # Missing required keys: every allow-listed key must be present.
+        for ci_key in GIT_COMMIT SHORT_GIT_COMMIT JUJU_BUILD_NUMBER \
+          JUJU_VERSION JUJU_GOMOD_MODE PULL_OCI_REGISTRY GIT_TREE_STATE
+        do
+          case " ${ci_seen_keys} " in
+            *" ${ci_key} "*) ;;
+            *) ci_fail "missing key '${ci_key}'" ;;
+          esac
+        done
+        # GIT_COMMIT must be the full 40-character SHA and
+        # SHORT_GIT_COMMIT its seven-character prefix.
+        printf '%s' "${ci_git_commit}" | grep -qE '^[0-9a-f]{40}$' \
+          || ci_fail "GIT_COMMIT '${ci_git_commit}' is not a full 40-character SHA"
+        printf '%s' "${ci_short_git_commit}" | grep -qE '^[0-9a-f]{7}$' \
+          || ci_fail "SHORT_GIT_COMMIT '${ci_short_git_commit}' is not a 7-character SHA prefix"
+        [ "${ci_short_git_commit}" = "$(printf '%s' "${ci_git_commit}" | cut -c1-7)" ] \
+          || ci_fail "SHORT_GIT_COMMIT '${ci_short_git_commit}' does not prefix GIT_COMMIT"
+        # The build number must be a positive decimal number.
+        case "${ci_build_number}" in
+          '' | *[!0-9]* | 0)
+            ci_fail "JUJU_BUILD_NUMBER '${ci_build_number}' is not a positive decimal number"
+            ;;
+        esac
+        # JUJU_VERSION must equal the checked-out base version plus the
+        # build number, so the image carries the same build-qualified
+        # version the QA client and consumer tag use.
+        ci_base_version="$(go run ./scripts/version)"
+        [ "${ci_juju_version}" = "${ci_base_version}.${ci_build_number}" ] \
+          || ci_fail "JUJU_VERSION '${ci_juju_version}' is not ${ci_base_version}.${ci_build_number}"
+        case "${ci_gomod_mode}" in
+          vendor | readonly) ;;
+          *) ci_fail "JUJU_GOMOD_MODE '${ci_gomod_mode}' is not a known module mode" ;;
+        esac
+        case "${ci_pull_oci_registry}" in
+          '' | /* | */ | *//* | *[!A-Za-z0-9._/-]*)
+            ci_fail "PULL_OCI_REGISTRY '${ci_pull_oci_registry}' is not a valid image namespace"
+            ;;
+          */*) ;;
+          *) ci_fail "PULL_OCI_REGISTRY '${ci_pull_oci_registry}' is not a namespaced image path" ;;
+        esac
+        # A source tarball is not a clean Git checkout: the QA packaging job
+        # always builds from an archive.
+        [ "${ci_git_tree_state}" = "archive" ] \
+          || ci_fail "GIT_TREE_STATE '${ci_git_tree_state}' is not 'archive'"
+
+        # The values are passed as make command-line variables: a plain '='
+        # Makefile assignment would silently override an environment value,
+        # and CGO_RPATH must stay empty so the rock's binaries resolve their
+        # libraries from the standard loader paths instead of the Docker
+        # image's /opt library directory.
+        make go-agent-build CGO_RPATH= \
+          GIT_COMMIT="${ci_git_commit}" \
+          JUJU_BUILD_NUMBER="${ci_build_number}" \
+          JUJU_GOMOD_MODE="${ci_gomod_mode}" \
+          PULL_OCI_REGISTRY="${ci_pull_oci_registry}" \
+          GIT_TREE_STATE="${ci_git_tree_state}"
+
+        version="${ci_juju_version}"
+      else
+        make go-agent-build CGO_RPATH=
+
+        version="$(go run ./scripts/version)"
+      fi
+
       craftctl set version="${version}"
 
       bin_dir="_build/linux_$(go env GOARCH)/bin"

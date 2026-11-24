@@ -1,2 +1,8 @@
 # Locally packed rock archives are build output, not source.
 *.rock
+
+# Generated CI build metadata. The QA source-packaging job writes this file
+# after checkout, next to rockcraft.yaml, so the managed LXD build receives
+# the exact full SHA, build number and version of the packaged source. A
+# local developer must not accidentally commit it.
+.ci-build-info

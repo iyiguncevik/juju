@@ -12,6 +12,11 @@ run_charmstore_deploy() {
 	# juju refresh snappass-test
 	# wait_for "snappass-test" "$(idle_condition_for_rev "snappass-test" "9")"
 
+	# Assert the model operator consumes the final build-qualified QA
+	# operator image while the smoke workload is active and before the
+	# model is destroyed (no-op without a QA registry path).
+	assert_k8s_modeloperator_image "test-charmstore-deploy"
+
 	destroy_model "test-charmstore-deploy"
 }
 
